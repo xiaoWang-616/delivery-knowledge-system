@@ -1,0 +1,223 @@
+{
+  "main": {
+    "id": "5f8b737deb645a2c",
+    "type": "split",
+    "children": [
+      {
+        "id": "cd14b661067dedcd",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "65161bec7d011a04",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "04-问题复盘/规则沉淀模板.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "规则沉淀模板"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "ec141ce5d064865e",
+    "type": "split",
+    "children": [
+      {
+        "id": "5aeeaf034dfb5828",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "f9f93e8e9d9adef0",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "82537ae6b20a6068",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "027835a5644424ba",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "832db32606c4f1d7",
+    "type": "split",
+    "children": [
+      {
+        "id": "1df0da670b046b0a",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "a510636caafb3a0a",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "04-问题复盘/规则沉淀模板.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "规则沉淀模板 的反向链接列表"
+            }
+          },
+          {
+            "id": "332e1f414e9a0bb3",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "04-问题复盘/规则沉淀模板.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "规则沉淀模板 的出链列表"
+            }
+          },
+          {
+            "id": "31356a932e5ba9bb",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "709e3681181139ac",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "f7ad3e12c4409219",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "04-问题复盘/规则沉淀模板.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "规则沉淀模板 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "f9f93e8e9d9adef0",
+  "lastOpenFiles": [
+    "11-规则库/项目差异规则.md",
+    "11-规则库/AI写代码规则.md",
+    "11-规则库/性能规则.md",
+    "11-规则库/样式规则.md",
+    "11-规则库/接口规则.md",
+    "11-规则库/README.md",
+    "11-规则库",
+    "10-测试修复闭环/二次修复启动提示词.md",
+    "10-测试修复闭环/人工确认清单.md",
+    "10-测试修复闭环/问题汇总模板.md",
+    "10-测试修复闭环/测试执行说明.md",
+    "10-测试修复闭环/README.md",
+    "10-测试修复闭环",
+    "09-模块看板/问题追踪看板模板.md",
+    "09-模块看板/开发进度看板模板.md",
+    "09-模块看板/模块依赖看板模板.md",
+    "09-模块看板/模块状态卡片模板.md",
+    "09-模块看板/README.md",
+    "09-模块看板",
+    "08-项目实例/项目实例模板/风险清单.md",
+    "08-项目实例/项目实例模板/交付看板.md",
+    "08-项目实例/项目实例模板/模块清单.md",
+    "08-项目实例/项目实例模板/资料清单.md",
+    "08-项目实例/项目实例模板/项目总览.md",
+    "08-项目实例/项目实例模板/README.md",
+    "08-项目实例/项目实例模板",
+    "08-项目实例",
+    "05-AI提示词/新模块启动总提示词.md",
+    "07-使用手册/新模块启动流程.md",
+    "07-使用手册/从0开始使用.md",
+    "07-使用手册",
+    "00-系统说明/阻塞分级规则.md",
+    "未命名.base",
+    "未命名.canvas"
+  ]
+}
