@@ -934,6 +934,60 @@ h3 {
   white-space: pre-wrap;
 }
 
+.controlled-execution-result {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #bbf7d0;
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  background: #f0fdf4;
+}
+
+.controlled-manual-required {
+  border-color: #f7dca6;
+  border-left-color: var(--amber);
+  background: #fffaf0;
+}
+
+.controlled-blocked,
+.controlled-error {
+  border-color: #fecdd3;
+  border-left-color: var(--red);
+  background: #fff1f2;
+}
+
+.controlled-execution-result > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.controlled-execution-result span,
+.controlled-execution-result small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.controlled-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.controlled-file-list code {
+  padding: 5px 8px;
+  border: 1px solid #fecdd3;
+  border-radius: 6px;
+  color: #9f1239;
+  background: #fff;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .task-review-box {
   display: grid;
   gap: 10px;

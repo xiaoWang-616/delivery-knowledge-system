@@ -15,6 +15,7 @@ import {
   prepareTaskPlan as requestTaskPlanPrepare,
   reviewTaskResult as requestTaskReview,
   runAiAdapterTask as requestAiAdapterTaskRun,
+  runControlledTask as requestControlledTaskRun,
   runValidation as requestValidationRun,
   saveRunRecord as requestRunRecordSave,
   scanProject as requestProjectScan,
@@ -39,6 +40,7 @@ import type {
   AiAdapterTaskRunResult,
   AutoDryRunResult,
   ContextPackageResult,
+  ControlledTaskExecutionResult,
   DeliveryIssue,
   DeliveryRunRecord,
   DeliveryTask,
@@ -748,6 +750,7 @@ function TaskPlanPanel({
   autoDryRun,
   aiAdapterStatus,
   aiAdapterRun,
+  controlledExecution,
   dispatchedPrompt,
   report,
   reviewResult,
@@ -756,9 +759,11 @@ function TaskPlanPanel({
   preparingAutoDryRun,
   checkingAiAdapter,
   runningAiAdapter,
+  runningControlledTask,
   onPrepareAutoDryRun,
   onCheckAiAdapter,
   onRunAiAdapter,
+  onRunControlledTask,
   onDispatch,
   onReportChange,
   onReview,
@@ -767,6 +772,7 @@ function TaskPlanPanel({
   autoDryRun: AutoDryRunResult | null;
   aiAdapterStatus: AiAdapterStatusResult | null;
   aiAdapterRun: AiAdapterTaskRunResult | null;
+  controlledExecution: ControlledTaskExecutionResult | null;
   dispatchedPrompt: TaskDispatchResult | null;
   report: string;
   reviewResult: TaskReviewResult | null;
@@ -775,9 +781,11 @@ function TaskPlanPanel({
   preparingAutoDryRun: boolean;
   checkingAiAdapter: boolean;
   runningAiAdapter: boolean;
+  runningControlledTask: boolean;
   onPrepareAutoDryRun: () => void;
   onCheckAiAdapter: () => void;
   onRunAiAdapter: () => void;
+  onRunControlledTask: () => void;
   onDispatch: () => void;
   onReportChange: (value: string) => void;
   onReview: () => void;
@@ -905,6 +913,9 @@ function TaskPlanPanel({
           <button className="secondary-button" onClick={onRunAiAdapter} disabled={!canRunAiAdapter || runningAiAdapter}>
             {runningAiAdapter ? "处理中" : "用 adapter 处理当前任务"}
           </button>
+          <button className="primary-button" onClick={onRunControlledTask} disabled={!canRunAiAdapter || runningControlledTask}>
+            {runningControlledTask ? "执行中" : "受控执行当前任务"}
+          </button>
         </div>
         {aiAdapterRun ? (
           <div className={`ai-adapter-result adapter-result-${aiAdapterRun.status}`}>
@@ -914,6 +925,29 @@ function TaskPlanPanel({
             </div>
             {aiAdapterRun.report ? <pre>{aiAdapterRun.report}</pre> : <small>manual 模式不会生成报告，只生成当前 task prompt。</small>}
             <small>记录文件：{aiAdapterRun.reportFile || "未生成"}</small>
+          </div>
+        ) : null}
+        {controlledExecution ? (
+          <div className={`controlled-execution-result controlled-${controlledExecution.status}`}>
+            <div>
+              <strong>{controlledExecution.summary}</strong>
+              <span>{controlledExecution.provider} / {controlledExecution.reviewDecision}</span>
+            </div>
+            <div className="execution-meta">
+              <span>任务：{controlledExecution.taskId || "无"}</span>
+              <span>修复轮次：{controlledExecution.repairRound}/{controlledExecution.maxRepairRounds}</span>
+              <span>变更：{controlledExecution.changedFiles.length}</span>
+              <span>越界：{controlledExecution.outOfScopeFiles.length}</span>
+            </div>
+            {controlledExecution.outOfScopeFiles.length ? (
+              <div className="controlled-file-list">
+                {controlledExecution.outOfScopeFiles.map((filePath) => (
+                  <code key={filePath}>{filePath}</code>
+                ))}
+              </div>
+            ) : null}
+            <small>执行记录：{controlledExecution.executionFile || "未生成"}</small>
+            <small>执行锁：{controlledExecution.lockFile || "无"}</small>
           </div>
         ) : null}
       </div>
@@ -1377,6 +1411,7 @@ function App() {
   const [autoDryRun, setAutoDryRun] = useState<AutoDryRunResult | null>(null);
   const [aiAdapterStatus, setAiAdapterStatus] = useState<AiAdapterStatusResult | null>(null);
   const [aiAdapterRun, setAiAdapterRun] = useState<AiAdapterTaskRunResult | null>(null);
+  const [controlledExecution, setControlledExecution] = useState<ControlledTaskExecutionResult | null>(null);
   const [taskDispatch, setTaskDispatch] = useState<TaskDispatchResult | null>(null);
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
@@ -1396,6 +1431,7 @@ function App() {
   const [preparingAutoDryRun, setPreparingAutoDryRun] = useState(false);
   const [checkingAiAdapter, setCheckingAiAdapter] = useState(false);
   const [runningAiAdapter, setRunningAiAdapter] = useState(false);
+  const [runningControlledTask, setRunningControlledTask] = useState(false);
   const [loadingTaskPlan, setLoadingTaskPlan] = useState(false);
   const [dispatchingTask, setDispatchingTask] = useState(false);
   const [reviewingTask, setReviewingTask] = useState(false);
@@ -1474,6 +1510,8 @@ function App() {
     const recordKnowledgeWrite = overrides.knowledgeWrite === undefined ? knowledgeWrite : overrides.knowledgeWrite;
     const recordFinalAcceptance = overrides.finalAcceptance === undefined ? finalAcceptance : overrides.finalAcceptance;
     const recordAutoDryRun = overrides.autoDryRun === undefined ? autoDryRun : overrides.autoDryRun;
+    const recordControlledExecution =
+      overrides.controlledExecution === undefined ? controlledExecution : overrides.controlledExecution;
     const recordSteps = overrides.steps || evaluateWorkflow(recordTask, recordRuntime, recordProjectScan);
     const recordRuntimeIssues = deliveryRuntimeIssues({
       reviewResult: taskReview,
@@ -1495,6 +1533,7 @@ function App() {
       executionPackage,
       taskPlan,
       autoDryRun: recordAutoDryRun,
+      controlledExecution: recordControlledExecution,
       finalAcceptance: recordFinalAcceptance,
       steps: recordSteps,
       issues: recordIssues,
@@ -1540,6 +1579,7 @@ function App() {
     setExecutionPackage(record.executionPackage || null);
     setTaskPlan(record.taskPlan || null);
     setAutoDryRun(record.autoDryRun || null);
+    setControlledExecution(record.controlledExecution || null);
     setFinalAcceptance(record.finalAcceptance || null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1608,6 +1648,7 @@ function App() {
     setExecutionPackage(null);
     setTaskPlan(null);
     setAutoDryRun(null);
+    setControlledExecution(null);
     setFinalAcceptance(null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1872,9 +1913,10 @@ function App() {
       setTaskDispatch(null);
       setTaskReview(null);
       setAiAdapterRun(null);
+      setControlledExecution(null);
       setTaskReport("");
       appendLog(result.summary, "success");
-      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null });
+      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null, controlledExecution: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "设计与任务队列生成失败";
       const failedTaskPlan: TaskPlanResult = {
@@ -1890,8 +1932,9 @@ function App() {
       };
       setTaskPlan(failedTaskPlan);
       setAutoDryRun(null);
+      setControlledExecution(null);
       appendLog(message, "error");
-      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan, autoDryRun: null });
+      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan, autoDryRun: null, controlledExecution: null });
     } finally {
       setPreparingTaskPlan(false);
     }
@@ -1914,9 +1957,10 @@ function App() {
       setTaskDispatch(null);
       setTaskReview(null);
       setAiAdapterRun(null);
+      setControlledExecution(null);
       setTaskReport("");
       appendLog(result.summary, "success");
-      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null });
+      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null, controlledExecution: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "任务队列恢复失败";
       appendLog(message, "error");
@@ -2012,6 +2056,7 @@ function App() {
     try {
       const result = await requestAiAdapterTaskRun({ task, taskPlan, taskId: currentTask.id });
       setAiAdapterRun(result);
+      setControlledExecution(null);
       setTaskDispatch({
         status: "success",
         taskId: result.taskId,
@@ -2026,7 +2071,7 @@ function App() {
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
         setAutoDryRun(null);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null, controlledExecution: null });
       }
       await navigator.clipboard.writeText(result.promptContent);
       appendLog(`${result.summary} prompt 已复制到剪贴板。`, result.status === "success" ? "success" : "warning");
@@ -2035,6 +2080,43 @@ function App() {
       appendLog(message, "error");
     } finally {
       setRunningAiAdapter(false);
+    }
+  }
+
+  async function runCurrentControlledTask() {
+    if (!taskPlan) {
+      appendLog("请先生成设计与任务队列。", "warning");
+      return;
+    }
+
+    const currentTask = currentQueueTask(taskPlan);
+    if (!currentTask) {
+      appendLog("当前没有可受控执行的任务。", "warning");
+      return;
+    }
+
+    setRunningControlledTask(true);
+    appendLog(`开始受控执行任务：${currentTask.id}`, "info");
+
+    try {
+      const result = await requestControlledTaskRun({ task, taskPlan, taskId: currentTask.id, autoReview: true });
+      setControlledExecution(result);
+      if (result.updatedTaskPlan) {
+        setTaskPlan(result.updatedTaskPlan);
+        setAutoDryRun(null);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null, controlledExecution: result });
+      } else {
+        await saveCurrentRunRecord(true, { controlledExecution: result });
+      }
+      appendLog(
+        result.summary,
+        result.status === "success" ? "success" : result.status === "blocked" || result.status === "error" ? "error" : "warning",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "受控单任务执行失败";
+      appendLog(message, "error");
+    } finally {
+      setRunningControlledTask(false);
     }
   }
 
@@ -2057,10 +2139,11 @@ function App() {
       const result = await requestTaskDispatch({ task, taskPlan, taskId: currentTask.id });
       setTaskDispatch(result);
       setAiAdapterRun(null);
+      setControlledExecution(null);
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
         setAutoDryRun(null);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null, controlledExecution: null });
       }
       await navigator.clipboard.writeText(result.promptContent);
       appendLog(`${result.summary} 已复制到剪贴板。`, "success");
@@ -2104,7 +2187,8 @@ function App() {
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
         setAutoDryRun(null);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
+        setControlledExecution(null);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null, controlledExecution: null });
       }
       setTaskReport("");
       setTaskDispatch(null);
@@ -2592,6 +2676,7 @@ function App() {
               autoDryRun={autoDryRun}
               aiAdapterStatus={aiAdapterStatus}
               aiAdapterRun={aiAdapterRun}
+              controlledExecution={controlledExecution}
               dispatchedPrompt={taskDispatch}
               report={taskReport}
               reviewResult={taskReview}
@@ -2600,9 +2685,11 @@ function App() {
               preparingAutoDryRun={preparingAutoDryRun}
               checkingAiAdapter={checkingAiAdapter}
               runningAiAdapter={runningAiAdapter}
+              runningControlledTask={runningControlledTask}
               onPrepareAutoDryRun={() => void prepareCurrentAutoDryRun()}
               onCheckAiAdapter={() => void checkCurrentAiAdapter()}
               onRunAiAdapter={() => void runCurrentTaskWithAiAdapter()}
+              onRunControlledTask={() => void runCurrentControlledTask()}
               onDispatch={() => void dispatchCurrentTask()}
               onReportChange={setTaskReport}
               onReview={() => void reviewCurrentTaskReport()}

@@ -197,6 +197,7 @@ bash scripts/check-console.sh
 - 任务队列恢复按钮
 - 自动执行器干跑计划按钮，只推演任务顺序和检查点，不调用 AI，不写真实项目
 - AI adapter 状态检查和单任务入口，支持 `manual` 与 `mock`
+- 受控单任务执行入口，记录 lock、adapter 输出、review、git diff 和修复轮次
 - 当前任务派发、报告回填、轻量 review、git 改动范围检查和修复任务生成
 - 总验收与知识沉淀生成
 - 知识库写入按钮
@@ -213,6 +214,7 @@ bash scripts/check-console.sh
 - 不接受任意命令，只支持用户手动触发的受控命令验收。
 - 默认不直接调用外部 AI，`manual` 模式仍需人工复制 prompt。
 - `mock` provider 只用于验证调度链路，不代表真实代码开发完成。
+- 受控单任务执行只处理当前 task，不会自动 commit / push，也不会无限修复。
 - 自动执行器干跑计划只生成预演结果，不替代真实 AI 执行。
 - 不深度读取业务文件内容，只做目录、脚本、规则文件和技术栈画像。
 
@@ -231,6 +233,18 @@ DELIVERY_AI_PROVIDER=mock bash scripts/start-console.sh
 ```
 
 后续接真实 AI provider 时，仍必须遵守单任务 prompt、`allowedFiles` 和系统 review。
+
+## 受控单任务执行
+
+“受控执行当前任务”会调用 runner 的 `/api/controlled-task/run-once`：
+
+- 先写入 `controlled-task.lock.json`，避免同一模块并发执行。
+- 通过 AI adapter 处理当前 task。
+- 如果 provider 返回报告，会自动进入系统 review。
+- 记录 git diff、越界文件、review 文件和修复任务。
+- 写入 `设计与任务/controlled-executions/`。
+
+修复轮次上限默认 3，可通过 `DELIVERY_MAX_REPAIR_ROUNDS` 调整。达到上限后必须人工确认。
 
 ## 写入规则
 

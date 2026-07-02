@@ -9,6 +9,7 @@ const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const knowledgeRoot = process.env.DELIVERY_KB_ROOT || join(runnerDirectory, "../../..");
 const codingAgentProtocolPath = join(knowledgeRoot, "02-模块交付", "写代码AI单任务协议.md");
 const aiProvider = String(process.env.DELIVERY_AI_PROVIDER || "manual").trim().toLowerCase();
+const maxRepairRounds = Math.max(1, Number(process.env.DELIVERY_MAX_REPAIR_ROUNDS || 3));
 const maxPreviewItems = 80;
 const ignoredNames = new Set([
   ".git",
@@ -2315,6 +2316,187 @@ async function runTaskWithAiAdapter(payload) {
   };
 }
 
+function lockAgeMs(lock) {
+  const startedAt = Date.parse(lock?.startedAt || "");
+  return Number.isFinite(startedAt) ? Date.now() - startedAt : Number.POSITIVE_INFINITY;
+}
+
+function assertExecutionLock(planDirectory, taskId) {
+  const lockFile = join(planDirectory, "controlled-task.lock.json");
+  const currentLock = safeReadJson(lockFile);
+  if (currentLock?.status === "running" && lockAgeMs(currentLock) < 15 * 60 * 1000) {
+    throw new Error(`已有受控任务正在执行：${currentLock.taskId || "未知任务"}。如确认已经结束，请稍后重试或人工检查 lock 文件。`);
+  }
+
+  const lock = {
+    status: "running",
+    taskId,
+    startedAt: new Date().toISOString(),
+  };
+  writeFileSync(lockFile, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  return lockFile;
+}
+
+function finishExecutionLock(lockFile, status, taskId) {
+  writeFileSync(
+    lockFile,
+    `${JSON.stringify(
+      {
+        status,
+        taskId,
+        finishedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function rootTaskId(taskItem) {
+  return taskItem?.fixOf || taskItem?.id || "";
+}
+
+function repairRoundForTask(tasks, taskItem) {
+  const rootId = rootTaskId(taskItem);
+  if (!rootId) return 0;
+  return tasks.filter((item) => item.fixOf === rootId).length;
+}
+
+function createControlledExecutionMarkdown(result) {
+  return `# 受控单任务执行记录
+
+> 本文件记录一次受控单任务执行。它不代表整个模块完成，也不会自动提交代码。
+
+## 结论
+
+- 状态：${result.status}
+- provider：${result.provider}
+- task：${result.taskId}
+- review：${result.reviewDecision}
+- 修复轮次：${result.repairRound}/${result.maxRepairRounds}
+
+${result.summary}
+
+## 文件
+
+- lock：${result.lockFile || "无"}
+- adapter report：${result.adapterReportFile || "无"}
+- review：${result.reviewFile || "未执行"}
+- fix prompt：${result.fixPromptFile || "无"}
+
+## git diff 范围
+
+### 本任务新增/变更文件
+
+${formatList(result.changedFiles, "无")}
+
+### 超出 allowedFiles 的文件
+
+${formatList(result.outOfScopeFiles, "无")}
+`;
+}
+
+function writeControlledExecutionFile(planDirectory, result) {
+  const directory = join(planDirectory, "controlled-executions");
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, `${result.taskId}-${timestampForFile()}.md`);
+  const nextResult = { ...result, executionFile: file };
+  writeFileSync(file, `${createControlledExecutionMarkdown(nextResult).trim()}\n`, "utf8");
+  return nextResult;
+}
+
+async function runControlledSingleTask(payload) {
+  const task = payload.task || {};
+  const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
+  const targetTask = payload.taskId ? tasks.find((item) => item.id === payload.taskId) : nextDispatchableTask(tasks);
+  if (!targetTask) {
+    throw new Error("没有可执行任务。请先生成任务队列，或处理阻断/依赖状态。");
+  }
+
+  if (targetTask.status === "blocked") {
+    throw new Error(`任务 ${targetTask.id} 已阻断，需要人工确认。`);
+  }
+
+  const repairRound = repairRoundForTask(tasks, targetTask);
+  if (repairRound >= maxRepairRounds && targetTask.fixOf) {
+    throw new Error(`任务 ${targetTask.id} 已达到修复轮次上限 ${maxRepairRounds}，需要人工确认。`);
+  }
+
+  const lockFile = assertExecutionLock(planDirectory, targetTask.id);
+  let lockStatus = "completed";
+
+  try {
+    const adapterRun = await runTaskWithAiAdapter({ ...payload, taskId: targetTask.id, taskPlan });
+    let review = null;
+    let nextTaskPlan = adapterRun.updatedTaskPlan || taskPlan;
+    let changedFiles = [];
+    let outOfScopeFiles = [];
+
+    if (payload.autoReview !== false && adapterRun.report.trim()) {
+      review = await reviewTaskResult({
+        task,
+        taskPlan: nextTaskPlan,
+        taskId: adapterRun.taskId,
+        report: adapterRun.report,
+      });
+      nextTaskPlan = review.updatedTaskPlan || nextTaskPlan;
+      changedFiles = review.changedFiles;
+      outOfScopeFiles = review.outOfScopeFiles;
+    } else {
+      const currentState = taskPlanStateFromPayload({ ...payload, taskPlan: nextTaskPlan });
+      const currentTask = currentState.tasks.find((item) => item.id === adapterRun.taskId) || targetTask;
+      const scope = await collectGitReviewScope(task, currentTask);
+      changedFiles = scope.changedFiles;
+      outOfScopeFiles = scope.outOfScopeFiles;
+    }
+
+    const status =
+      adapterRun.status === "manual-required"
+        ? "manual-required"
+        : review?.decision === "blocked"
+          ? "blocked"
+          : outOfScopeFiles.length
+            ? "blocked"
+            : "success";
+    if (status === "blocked") {
+      lockStatus = "blocked";
+    }
+
+    const result = writeControlledExecutionFile(planDirectory, {
+      status,
+      mode: "single-task",
+      provider: adapterRun.provider,
+      taskId: adapterRun.taskId,
+      lockFile,
+      executionFile: "",
+      adapterReportFile: adapterRun.reportFile,
+      reviewFile: review?.reviewFile || null,
+      fixPromptFile: review?.fixPromptFile || null,
+      reviewDecision: review?.decision || "not-reviewed",
+      repairRound,
+      maxRepairRounds,
+      changedFiles,
+      outOfScopeFiles,
+      updatedTaskPlan: nextTaskPlan,
+      summary:
+        status === "manual-required"
+          ? `受控执行已准备 ${adapterRun.taskId}，需要人工把 prompt 交给写代码 AI 后回填报告。`
+          : review
+            ? `受控执行已完成 ${adapterRun.taskId} 并执行系统 review：${review.decision}。`
+            : `受控执行已完成 ${adapterRun.taskId}，等待后续 review。`,
+      generatedAt: new Date().toISOString(),
+    });
+
+    finishExecutionLock(lockFile, lockStatus, adapterRun.taskId);
+    return result;
+  } catch (error) {
+    lockStatus = "error";
+    finishExecutionLock(lockFile, lockStatus, targetTask.id);
+    throw error;
+  }
+}
+
 function reportField(report, label) {
   const labels = ["任务编号", "实际改动文件", "完成内容", "运行命令和结果", "未完成内容", "新增问题", "建议下一步"];
   const nextLabels = labels.filter((item) => item !== label).join("|");
@@ -3514,6 +3696,36 @@ const server = createServer(async (request, response) => {
         reportFile: "",
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "AI adapter 执行任务失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/controlled-task/run-once") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = await runControlledSingleTask(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        mode: "single-task",
+        provider: aiAdapterStatus().provider,
+        taskId: "",
+        lockFile: "",
+        executionFile: "",
+        adapterReportFile: "",
+        reviewFile: null,
+        fixPromptFile: null,
+        reviewDecision: "not-reviewed",
+        repairRound: 0,
+        maxRepairRounds,
+        changedFiles: [],
+        outOfScopeFiles: [],
+        updatedTaskPlan: null,
+        summary: error instanceof Error ? error.message : "受控单任务执行失败",
         generatedAt: new Date().toISOString(),
       });
     }

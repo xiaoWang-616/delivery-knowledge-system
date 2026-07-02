@@ -3,6 +3,7 @@ import type {
   AiAdapterTaskRunResult,
   AutoDryRunResult,
   ContextPackageResult,
+  ControlledTaskExecutionResult,
   DeliveryIssue,
   DeliveryRunRecord,
   DeliveryTask,
@@ -235,6 +236,23 @@ export async function runAiAdapterTask(payload: {
   });
 
   return readJson<AiAdapterTaskRunResult>(response);
+}
+
+export async function runControlledTask(payload: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult;
+  taskId?: string;
+  autoReview?: boolean;
+}): Promise<ControlledTaskExecutionResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/controlled-task/run-once`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<ControlledTaskExecutionResult>(response);
 }
 
 export async function createIssueFixTask(payload: {

@@ -184,6 +184,26 @@ export type AiAdapterTaskRunResult = {
   generatedAt: string;
 };
 
+export type ControlledTaskExecutionResult = {
+  status: "success" | "manual-required" | "blocked" | "error";
+  mode: "single-task";
+  provider: AiAdapterStatusResult["provider"];
+  taskId: string;
+  lockFile: string;
+  executionFile: string;
+  adapterReportFile: string;
+  reviewFile: string | null;
+  fixPromptFile: string | null;
+  reviewDecision: TaskReviewResult["decision"] | "not-reviewed";
+  repairRound: number;
+  maxRepairRounds: number;
+  changedFiles: string[];
+  outOfScopeFiles: string[];
+  updatedTaskPlan: TaskPlanResult | null;
+  summary: string;
+  generatedAt: string;
+};
+
 export type TaskReviewResult = {
   status: "success" | "error";
   decision: "approved" | "needs-fix" | "blocked";
@@ -292,6 +312,7 @@ export type DeliveryRunRecord = {
   executionPackage: ExecutionPackageResult | null;
   taskPlan: TaskPlanResult | null;
   autoDryRun: AutoDryRunResult | null;
+  controlledExecution: ControlledTaskExecutionResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
   steps: WorkflowStep[];
   issues: DeliveryIssue[];
