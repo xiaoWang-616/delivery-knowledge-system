@@ -1,6 +1,7 @@
 import type {
   AiAdapterStatusResult,
   AiAdapterTaskRunResult,
+  AutoAdvanceResult,
   AutoDryRunResult,
   ContextPackageResult,
   ControlledTaskExecutionResult,
@@ -254,6 +255,53 @@ export async function runControlledTask(payload: {
   });
 
   return readJson<ControlledTaskExecutionResult>(response);
+}
+
+export async function autoAdvanceOnce(payload: {
+  task: DeliveryTask;
+  projectScan: ProjectScanResult | null;
+  steps: WorkflowStep[];
+  issues: DeliveryIssue[];
+  validationRun: ValidationRunResult | null;
+  pageSmoke: PageSmokeTestResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+  taskPlan: TaskPlanResult | null;
+  markdown: string;
+}): Promise<AutoAdvanceResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/automation/advance-once`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AutoAdvanceResult>(response);
+}
+
+export async function autoRunUntilPause(payload: {
+  task: DeliveryTask;
+  projectScan: ProjectScanResult | null;
+  steps: WorkflowStep[];
+  issues: DeliveryIssue[];
+  validationRun: ValidationRunResult | null;
+  pageSmoke: PageSmokeTestResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+  taskPlan: TaskPlanResult | null;
+  markdown: string;
+  maxSteps?: number;
+}): Promise<AutoAdvanceResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/automation/run-until-pause`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AutoAdvanceResult>(response);
 }
 
 export async function runPageSmokeTest(payload: {

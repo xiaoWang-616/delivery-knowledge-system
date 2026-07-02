@@ -9,6 +9,9 @@
 - 任务包页用阶段卡提示资料依赖顺序。
 - 系统生成自动交付执行计划。
 - 用状态卡片展示 AI 内部走到哪一步。
+- 用执行决策面板展示当前阶段、责任方、下一步动作、判断依据和是否建议自动推进。
+- 用“自动推进一步”触发 runner 执行一个安全动作，前端只负责展示结果。
+- 用“自动运行到暂停点”让 runner 连续推进多个安全小步，直到需要人或写代码 AI 处理。
 - 在交付结果页用交付总览聚合任务队列、review、命令验收、页面点测、知识沉淀和总验收状态。
 - 在风险归档页自动汇总运行问题池，并推导规则沉淀建议。
 - 本地 runner 只读扫描真实项目路径，生成项目画像。
@@ -151,6 +154,16 @@ bash scripts/check-console.sh
 - review 记录写入 `设计与任务/reviews/`，队列状态回写到 `task-queue.auto.json`。
 - 点击“恢复任务队列”：按当前项目名和模块名读取 `设计与任务/task-queue.auto.json`，用于刷新页面或换人接手后继续任务。
 
+执行看板和交付结果页都会展示“执行决策”。它会告诉用户：
+
+- 当前阶段是什么。
+- 下一步该派任务、等报告、review、修复、命令验收、页面点测、知识沉淀还是总验收。
+- 当前责任方是用户、系统 AI、写代码 AI 还是测试。
+- 为什么这么判断。
+- 人需要做什么。
+- 系统可以做什么。
+- 当前是否建议自动推进。
+
 交付结果页顶部的“交付总览”会把任务队列、最近一次系统 review、命令验收、页面点测、知识沉淀和总验收聚合成状态卡，并显示下一步建议。它只读取当前页面已有状态，不直接写真实项目。
 
 风险归档页会把资料缺口、review 失败、越界改动、命令验收失败、知识写入失败和总验收风险统一成问题池。问题池会随 Markdown、知识库写入和总验收传递，不只是页面展示。
@@ -186,6 +199,7 @@ bash scripts/check-console.sh
 - 可视化模块依赖图
 - P0/P1/P2 风险归档
 - 运行演练日志
+- 执行决策面板
 - 交付总览和下一步建议
 - 运行问题池和规则沉淀建议
 - Markdown 结果生成和复制
@@ -200,7 +214,9 @@ bash scripts/check-console.sh
 - 设计与任务队列生成按钮
 - 任务队列恢复按钮
 - 自动执行器干跑计划按钮，只推演任务顺序和检查点，不调用 AI，不写真实项目
-- AI adapter 状态检查和单任务入口，支持 `manual` 与 `mock`
+- AI adapter 状态检查和单任务入口，支持 `manual`、`mock`、`command` 与 `disabled`
+- 自动推进一步：根据当前状态执行一个安全小步，不跳过 review，不无限循环
+- 自动运行到暂停点：最多连续执行 20 个安全小步，遇到等待、阻断或失败即暂停
 - 受控单任务执行入口，记录 lock、adapter 输出、review、git diff 和修复轮次
 - 轻量页面点测按钮，检查页面 URL、标题、关键词和明显错误文本
 - 当前任务派发、报告回填、轻量 review、git 改动范围检查和修复任务生成
@@ -229,15 +245,38 @@ runner 通过 `DELIVERY_AI_PROVIDER` 选择 provider：
 
 - `manual`：默认模式，只生成当前任务 prompt，需要人交给写代码 AI。
 - `mock`：测试模式，生成一份 mock 报告，不修改真实项目。
+- `command`：本地命令模式，把当前任务 prompt 通过 stdin 传给可信命令，并在目标项目目录下执行。
 - `disabled`：禁用 adapter，只保留手工派发和回填报告。
 
-示例：
+mock 示例：
 
 ```bash
 DELIVERY_AI_PROVIDER=mock bash scripts/start-console.sh
 ```
 
-后续接真实 AI provider 时，仍必须遵守单任务 prompt、`allowedFiles` 和系统 review。
+本地命令示例：
+
+```bash
+DELIVERY_AI_PROVIDER=command \
+DELIVERY_AI_COMMAND=your-ai-cli \
+DELIVERY_AI_ARGS='["--flag","value","--prompt","{promptFile}"]' \
+bash scripts/start-console.sh
+```
+
+`DELIVERY_AI_ARGS` 必须是 JSON 字符串数组，支持 `{taskId}`、`{promptFile}`、`{projectPath}` 占位符。`command` provider 可能修改真实项目，所以只应该配置可信命令；它仍必须遵守单任务 prompt、执行锁、`allowedFiles` 和系统 review。
+
+## 自动推进一步
+
+“自动推进一步”调用 runner 的 `/api/automation/advance-once`，每次只执行一个安全动作：
+
+- 没有任务队列时，生成上下文包、执行包和设计与任务队列。
+- 有 pending 任务时，按 provider 能力派发任务或受控执行当前任务。
+- 任务全部完成后，依次执行命令验收、页面点测、知识库写入和总验收。
+- 遇到 assigned、blocked、命令失败、页面点测失败、缺少授权时停止，并返回原因和下一步。
+
+这个入口是系统 AI 调度循环的最小单元，不是让前端接管业务逻辑。
+
+“自动运行到暂停点”调用 runner 的 `/api/automation/run-until-pause`，内部连续执行多个“自动推进一步”，默认最多 20 步。它适合资料和权限都给齐后使用：系统会自动走到等待报告、阻断、验收失败、缺少授权或交付完成的位置，并返回每个小步的摘要。
 
 ## 受控单任务执行
 

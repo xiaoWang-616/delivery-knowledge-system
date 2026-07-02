@@ -9,6 +9,9 @@ const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const knowledgeRoot = process.env.DELIVERY_KB_ROOT || join(runnerDirectory, "../../..");
 const codingAgentProtocolPath = join(knowledgeRoot, "02-模块交付", "写代码AI单任务协议.md");
 const aiProvider = String(process.env.DELIVERY_AI_PROVIDER || "manual").trim().toLowerCase();
+const aiCommand = String(process.env.DELIVERY_AI_COMMAND || "").trim();
+const aiCommandArgs = String(process.env.DELIVERY_AI_ARGS || "").trim();
+const aiCommandTimeoutMs = Math.max(30000, Number(process.env.DELIVERY_AI_TIMEOUT_MS || 10 * 60 * 1000));
 const maxRepairRounds = Math.max(1, Number(process.env.DELIVERY_MAX_REPAIR_ROUNDS || 3));
 const maxPreviewItems = 80;
 const ignoredNames = new Set([
@@ -190,7 +193,7 @@ function packageManagerCommand(packageManager, scriptName) {
   return { command: "pnpm", args: ["run", scriptName] };
 }
 
-function runProcess({ command, args, cwd, timeoutMs = 120000 }) {
+function runProcess({ command, args, cwd, timeoutMs = 120000, input = "" }) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let stdout = "";
@@ -215,6 +218,9 @@ function runProcess({ command, args, cwd, timeoutMs = 120000 }) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
+    child.stdin.on("error", () => {
+      // Some commands exit before reading stdin. Keep the process result authoritative.
+    });
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
@@ -237,6 +243,10 @@ function runProcess({ command, args, cwd, timeoutMs = 120000 }) {
         output: truncateOutput(`${stdout}\n${stderr}`.trim() || "命令无输出。"),
       });
     });
+    if (input) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
   });
 }
 
@@ -2216,7 +2226,8 @@ async function dispatchTask(payload) {
 }
 
 function aiAdapterStatus() {
-  const provider = aiProvider === "mock" ? "mock" : aiProvider === "disabled" ? "disabled" : "manual";
+  const provider =
+    aiProvider === "mock" || aiProvider === "disabled" || aiProvider === "command" ? aiProvider : "manual";
   const warnings = [];
   if (provider === "manual") {
     warnings.push("当前为 manual 模式：runner 只生成单任务 prompt，仍需人工复制给写代码 AI。");
@@ -2224,23 +2235,36 @@ function aiAdapterStatus() {
   if (provider === "mock") {
     warnings.push("当前为 mock 模式：只生成测试报告，不会修改真实项目，也不能代表真实开发完成。");
   }
+  if (provider === "command") {
+    if (aiCommand) {
+      warnings.push("当前为 command 模式：runner 会把单任务 prompt 通过 stdin 交给本地命令执行。请确认命令可信。");
+    } else {
+      warnings.push("当前为 command 模式，但未配置 DELIVERY_AI_COMMAND，不能自动执行。");
+    }
+  }
   if (provider === "disabled") {
     warnings.push("AI adapter 已禁用，只能使用手工派发和回填报告。");
   }
 
+  const commandReady = provider === "command" && Boolean(aiCommand);
+  const canAutoRun = provider === "mock" || commandReady;
   return {
-    status: provider === "disabled" ? "warning" : "success",
+    status: provider === "disabled" || (provider === "command" && !aiCommand) ? "warning" : "success",
     provider,
-    canAutoRun: provider === "mock",
-    requiresManualInput: provider !== "mock",
-    configSource: "DELIVERY_AI_PROVIDER",
+    canAutoRun,
+    requiresManualInput: !canAutoRun,
+    configSource: "DELIVERY_AI_PROVIDER / DELIVERY_AI_COMMAND / DELIVERY_AI_ARGS",
     warnings,
     summary:
       provider === "mock"
         ? "AI adapter 当前为 mock provider，可用于验证调度流程。"
         : provider === "disabled"
           ? "AI adapter 当前禁用。"
-          : "AI adapter 当前为 manual provider，需要人工把 prompt 交给写代码 AI。",
+          : provider === "command"
+            ? commandReady
+              ? `AI adapter 当前为 command provider，将调用本地命令：${aiCommand}。`
+              : "AI adapter 当前为 command provider，但缺少 DELIVERY_AI_COMMAND。"
+            : "AI adapter 当前为 manual provider，需要人工把 prompt 交给写代码 AI。",
     generatedAt: new Date().toISOString(),
   };
 }
@@ -2288,6 +2312,44 @@ ${report || "manual 模式不生成报告。"}
   return file;
 }
 
+function parseAiCommandArgs(context) {
+  if (!aiCommandArgs) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(aiCommandArgs);
+  } catch {
+    throw new Error("DELIVERY_AI_ARGS 必须是 JSON 字符串数组，例如 [\"--model\",\"xxx\"]。");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    throw new Error("DELIVERY_AI_ARGS 必须是 JSON 字符串数组。");
+  }
+  return parsed.map((item) =>
+    item
+      .replaceAll("{taskId}", context.taskId)
+      .replaceAll("{promptFile}", context.promptFile)
+      .replaceAll("{projectPath}", context.projectPath),
+  );
+}
+
+async function runCommandAdapter({ task, taskId, promptFile, promptContent }) {
+  if (!aiCommand) {
+    throw new Error("command provider 缺少 DELIVERY_AI_COMMAND。");
+  }
+  const projectPath = task?.projectPath && existsSync(task.projectPath) && statSync(task.projectPath).isDirectory() ? task.projectPath : knowledgeRoot;
+  const args = parseAiCommandArgs({ taskId, promptFile, projectPath });
+  const result = await runProcess({
+    command: aiCommand,
+    args,
+    cwd: projectPath,
+    timeoutMs: aiCommandTimeoutMs,
+    input: promptContent,
+  });
+  if (result.status !== "passed") {
+    throw new Error(`command provider 执行失败：${result.output || result.status}`);
+  }
+  return result.output.trim();
+}
+
 async function runTaskWithAiAdapter(payload) {
   const status = aiAdapterStatus();
   if (status.provider === "disabled") {
@@ -2295,9 +2357,16 @@ async function runTaskWithAiAdapter(payload) {
   }
 
   const dispatch = await dispatchTask(payload);
-  const { planDirectory } = taskPlanStateFromPayload({ ...payload, taskPlan: dispatch.updatedTaskPlan || payload.taskPlan });
+  const { planDirectory, tasks } = taskPlanStateFromPayload({ ...payload, taskPlan: dispatch.updatedTaskPlan || payload.taskPlan });
   const taskId = dispatch.taskId;
-  const report = status.provider === "mock" ? createMockAdapterReport({ id: taskId }) : "";
+  const currentTask = tasks.find((item) => item.id === taskId);
+  const promptFile = currentTask ? join(planDirectory, currentTask.promptFile) : "";
+  const report =
+    status.provider === "mock"
+      ? createMockAdapterReport({ id: taskId })
+      : status.provider === "command"
+        ? await runCommandAdapter({ task: payload.task || {}, taskId, promptFile, promptContent: dispatch.promptContent })
+        : "";
   const reportFile = writeAiAdapterRunFile(planDirectory, status.provider, taskId, dispatch.promptContent, report);
 
   return {
@@ -2311,7 +2380,9 @@ async function runTaskWithAiAdapter(payload) {
     summary:
       status.provider === "manual"
         ? `manual adapter 已准备 ${taskId} prompt，请人工交给写代码 AI。`
-        : `mock adapter 已生成 ${taskId} 测试报告，未修改真实项目。`,
+        : status.provider === "mock"
+          ? `mock adapter 已生成 ${taskId} 测试报告，未修改真实项目。`
+          : `command adapter 已执行 ${taskId}，并收集命令输出作为完成报告。`,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -2495,6 +2566,299 @@ async function runControlledSingleTask(payload) {
     finishExecutionLock(lockFile, lockStatus, targetTask.id);
     throw error;
   }
+}
+
+function hasRequiredTaskInfo(task) {
+  return Boolean(
+    String(task?.projectName || "").trim() &&
+      String(task?.projectPath || "").trim() &&
+      String(task?.moduleName || "").trim() &&
+      String(task?.requirement || "").trim(),
+  );
+}
+
+function autoAdvanceResponse({ status = "waiting", action = "wait", didRun = false, nextAction, reason = [], summary, extra = {} }) {
+  return {
+    status,
+    action,
+    didRun,
+    nextAction,
+    reason,
+    summary: summary || nextAction,
+    generatedAt: new Date().toISOString(),
+    ...extra,
+  };
+}
+
+async function autoAdvanceOnce(payload) {
+  const task = payload.task || {};
+  if (!hasRequiredTaskInfo(task)) {
+    return autoAdvanceResponse({
+      status: "blocked",
+      action: "blocked",
+      nextAction: "先补齐项目名称、真实项目路径、模块名称和需求说明。",
+      reason: ["一次性任务包基础信息不完整，不能稳定生成设计与任务队列。"],
+      summary: "自动推进已暂停：任务包资料不完整。",
+    });
+  }
+
+  if (!payload.taskPlan?.tasks?.length) {
+    const contextPackage = prepareContextPackage(payload);
+    const executionPackage = prepareExecutionPackage({ ...payload, contextPackage });
+    const taskPlan = prepareTaskPlan({ ...payload, contextPackage, executionPackage });
+    return autoAdvanceResponse({
+      status: "success",
+      action: "prepare-task-plan",
+      didRun: true,
+      nextAction: "设计与任务队列已生成，下一步派发第一个可执行任务。",
+      reason: ["尚未存在 task queue，因此先生成上下文包、执行包和任务队列。"],
+      summary: taskPlan.summary,
+      extra: { contextPackage, executionPackage, taskPlan },
+    });
+  }
+
+  const state = taskPlanStateFromPayload(payload);
+  const latestTaskPlan = updatedTaskPlan(state.taskPlan, state.tasks, []);
+  const blockedTasks = state.tasks.filter((item) => item.status === "blocked");
+  if (blockedTasks.length) {
+    return autoAdvanceResponse({
+      status: "blocked",
+      action: "blocked",
+      nextAction: "先处理 blocked 任务，再继续自动推进。",
+      reason: blockedTasks.map((item) => `${item.id}：${item.title}`),
+      summary: `自动推进已暂停：存在 ${blockedTasks.length} 个阻断任务。`,
+      extra: { taskPlan: latestTaskPlan },
+    });
+  }
+
+  const currentTask = nextDispatchableTask(state.tasks);
+  if (currentTask?.status === "assigned") {
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "wait",
+      nextAction: `等待写代码 AI 回填 ${currentTask.id} 完成报告并提交 review。`,
+      reason: ["当前任务已派发，系统不能跳过报告和 review。"],
+      summary: "自动推进已暂停：等待当前任务报告。",
+      extra: { taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (currentTask?.status === "pending") {
+    const adapter = aiAdapterStatus();
+    if (adapter.canAutoRun && task.permissions?.allowWriteCode) {
+      const controlledExecution = await runControlledSingleTask({ ...payload, taskPlan: latestTaskPlan, taskId: currentTask.id, autoReview: true });
+      return autoAdvanceResponse({
+        status: controlledExecution.status === "success" ? "success" : controlledExecution.status === "manual-required" ? "waiting" : "blocked",
+        action: "controlled-task",
+        didRun: controlledExecution.status !== "manual-required",
+        nextAction:
+          controlledExecution.reviewDecision === "approved"
+            ? "当前任务通过 review，下一步继续派发后续任务。"
+            : controlledExecution.reviewDecision === "needs-fix"
+              ? "当前任务需要修复，下一步优先执行生成的修复任务。"
+              : controlledExecution.summary,
+        reason: [controlledExecution.summary],
+        summary: controlledExecution.summary,
+        extra: { controlledExecution, taskPlan: controlledExecution.updatedTaskPlan || latestTaskPlan },
+      });
+    }
+
+    const taskDispatch = await dispatchTask({ ...payload, taskPlan: latestTaskPlan, taskId: currentTask.id });
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "dispatch-task",
+      didRun: true,
+      nextAction: `已派发 ${currentTask.id}，等待写代码 AI 完成后回填报告。`,
+      reason: [adapter.summary],
+      summary: taskDispatch.summary,
+      extra: { taskDispatch, taskPlan: taskDispatch.updatedTaskPlan || latestTaskPlan },
+    });
+  }
+
+  const allTasksDone = state.tasks.length > 0 && state.tasks.every((item) => item.status === "done");
+  if (!allTasksDone) {
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "wait",
+      nextAction: "当前没有可派发任务，请检查任务依赖或 review 状态。",
+      reason: ["任务队列未全部完成，但没有 pending 或 assigned 的可执行任务。"],
+      summary: "自动推进已暂停：任务依赖需要确认。",
+      extra: { taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (!payload.validationRun) {
+    if (!task.permissions?.allowRunCommands) {
+      return autoAdvanceResponse({
+        status: "waiting",
+        action: "wait",
+        nextAction: "任务已完成，但缺少运行命令授权，无法执行 typecheck / lint / build。",
+        reason: ["权限中 allowRunCommands 为 false。"],
+        summary: "自动推进已暂停：等待命令授权。",
+        extra: { taskPlan: latestTaskPlan },
+      });
+    }
+    const validationRun = await runValidation(payload);
+    return autoAdvanceResponse({
+      status: validationRun.status === "success" ? "success" : "waiting",
+      action: "run-validation",
+      didRun: true,
+      nextAction: validationRun.status === "success" ? "命令验收已通过，下一步执行页面点测。" : "命令验收未通过，先沉淀问题并生成修复任务。",
+      reason: [validationRun.summary],
+      summary: validationRun.summary,
+      extra: { validationRun, taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (payload.validationRun.status !== "success") {
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "wait",
+      nextAction: "命令验收未通过，先把失败命令转成修复任务或环境问题。",
+      reason: [payload.validationRun.summary],
+      summary: "自动推进已暂停：命令验收未通过。",
+      extra: { taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (!payload.pageSmoke) {
+    if (!task.permissions?.allowRunCommands) {
+      return autoAdvanceResponse({
+        status: "waiting",
+        action: "wait",
+        nextAction: "命令已通过，但缺少点测授权，无法执行页面点测。",
+        reason: ["权限中 allowRunCommands 为 false。"],
+        summary: "自动推进已暂停：等待点测授权。",
+        extra: { taskPlan: latestTaskPlan },
+      });
+    }
+    const pageSmoke = await runPageSmokeTest({ ...payload, taskPlan: latestTaskPlan });
+    return autoAdvanceResponse({
+      status: pageSmoke.status === "success" || pageSmoke.status === "skipped" || pageSmoke.status === "warning" ? "success" : "waiting",
+      action: "run-page-smoke",
+      didRun: true,
+      nextAction:
+        pageSmoke.status === "success" || pageSmoke.status === "skipped" || pageSmoke.status === "warning"
+          ? "页面点测已记录，下一步写入知识库。"
+          : "页面点测未通过，先沉淀问题并生成修复任务。",
+      reason: [pageSmoke.summary],
+      summary: pageSmoke.summary,
+      extra: { pageSmoke, taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (payload.pageSmoke.status === "failed" || payload.pageSmoke.status === "error") {
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "wait",
+      nextAction: "页面点测未通过，先沉淀 URL、缺失关键词和错误文本，再生成修复任务。",
+      reason: [payload.pageSmoke.summary],
+      summary: "自动推进已暂停：页面点测未通过。",
+      extra: { taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (payload.knowledgeWrite?.status !== "success") {
+    if (!task.permissions?.allowKnowledgeWrite) {
+      return autoAdvanceResponse({
+        status: "waiting",
+        action: "wait",
+        nextAction: "缺少知识库写入授权，不能生成最终沉淀。",
+        reason: ["权限中 allowKnowledgeWrite 为 false。"],
+        summary: "自动推进已暂停：等待知识库写入授权。",
+        extra: { taskPlan: latestTaskPlan },
+      });
+    }
+    const knowledgeWrite = writeKnowledge(payload);
+    return autoAdvanceResponse({
+      status: knowledgeWrite.status === "success" ? "success" : "waiting",
+      action: "write-knowledge",
+      didRun: true,
+      nextAction: knowledgeWrite.status === "success" ? "知识库已写入，下一步生成总验收。" : "知识库写入失败，先检查写入路径。",
+      reason: [knowledgeWrite.summary],
+      summary: knowledgeWrite.summary,
+      extra: { knowledgeWrite, taskPlan: latestTaskPlan },
+    });
+  }
+
+  if (!payload.finalAcceptance) {
+    const finalAcceptance = finalizeDelivery({ ...payload, taskPlan: latestTaskPlan });
+    return autoAdvanceResponse({
+      status: finalAcceptance.status === "success" ? "success" : "waiting",
+      action: "finalize-delivery",
+      didRun: true,
+      nextAction: finalAcceptance.status === "success" ? "交付闭环完成，可以提交代码或进入下一个模块。" : "总验收存在风险，先处理 findings。",
+      reason: [finalAcceptance.summary],
+      summary: finalAcceptance.summary,
+      extra: { finalAcceptance, taskPlan: latestTaskPlan },
+    });
+  }
+
+  return autoAdvanceResponse({
+    status: payload.finalAcceptance.status === "success" ? "success" : "waiting",
+    action: payload.finalAcceptance.status === "success" ? "done" : "wait",
+    didRun: false,
+    nextAction: payload.finalAcceptance.status === "success" ? "当前模块已经完成。" : "总验收仍有风险，先处理验收发现。",
+    reason: [payload.finalAcceptance.summary],
+    summary: payload.finalAcceptance.summary,
+    extra: { taskPlan: latestTaskPlan, finalAcceptance: payload.finalAcceptance },
+  });
+}
+
+function mergeAutoAdvanceState(state, result) {
+  return {
+    ...state,
+    contextPackage: result.contextPackage || state.contextPackage || null,
+    executionPackage: result.executionPackage || state.executionPackage || null,
+    taskPlan: result.taskPlan || state.taskPlan || null,
+    validationRun: result.validationRun || state.validationRun || null,
+    pageSmoke: result.pageSmoke || state.pageSmoke || null,
+    knowledgeWrite: result.knowledgeWrite || state.knowledgeWrite || null,
+    finalAcceptance: result.finalAcceptance || state.finalAcceptance || null,
+  };
+}
+
+async function autoRunUntilPause(payload) {
+  const maxSteps = Math.min(20, Math.max(1, Number(payload.maxSteps || 20)));
+  let state = { ...payload };
+  let latest = null;
+  const steps = [];
+
+  for (let index = 0; index < maxSteps; index += 1) {
+    latest = await autoAdvanceOnce(state);
+    steps.push({
+      action: latest.action,
+      status: latest.status,
+      didRun: latest.didRun,
+      summary: latest.summary,
+      nextAction: latest.nextAction,
+      generatedAt: latest.generatedAt,
+    });
+    state = mergeAutoAdvanceState(state, latest);
+
+    if (latest.status !== "success" || !latest.didRun || latest.action === "done") {
+      break;
+    }
+  }
+
+  if (!latest) {
+    return autoAdvanceResponse({
+      status: "waiting",
+      action: "wait",
+      didRun: false,
+      nextAction: "没有可执行步骤。",
+      reason: ["自动运行未产生任何步骤。"],
+      summary: "自动运行到暂停点未执行。",
+      extra: { steps },
+    });
+  }
+
+  const ranCount = steps.filter((item) => item.didRun).length;
+  return {
+    ...latest,
+    steps,
+    summary: `自动运行到暂停点：已执行 ${ranCount} 个小步。${latest.summary}`,
+  };
 }
 
 function smokeDirectoriesForPayload(payload) {
@@ -4082,6 +4446,47 @@ const server = createServer(async (request, response) => {
         outOfScopeFiles: [],
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "受控单任务执行失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/automation/advance-once") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = await autoAdvanceOnce(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        action: "blocked",
+        didRun: false,
+        nextAction: "自动推进失败，请查看 runner 错误并决定是否生成修复任务。",
+        reason: [error instanceof Error ? error.message : "自动推进失败"],
+        summary: error instanceof Error ? error.message : "自动推进失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/automation/run-until-pause") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = await autoRunUntilPause(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        action: "blocked",
+        didRun: false,
+        nextAction: "自动运行失败，请查看 runner 错误并决定是否生成修复任务。",
+        reason: [error instanceof Error ? error.message : "自动运行失败"],
+        steps: [],
+        summary: error instanceof Error ? error.message : "自动运行失败",
         generatedAt: new Date().toISOString(),
       });
     }

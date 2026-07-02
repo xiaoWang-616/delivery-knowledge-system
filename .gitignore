@@ -23,7 +23,7 @@ yarn-error.log*
 .DS_Store
 
 # Obsidian local workspace state
-.obsidian/workspace.json
+.obsidian/workspace*.json
 .obsidian/graph.json
 *.canvas
 

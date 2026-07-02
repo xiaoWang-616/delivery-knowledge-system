@@ -165,7 +165,7 @@ export type TaskDispatchResult = {
 
 export type AiAdapterStatusResult = {
   status: "success" | "warning" | "error";
-  provider: "manual" | "mock" | "disabled";
+  provider: "manual" | "mock" | "command" | "disabled";
   canAutoRun: boolean;
   requiresManualInput: boolean;
   configSource: string;
@@ -304,6 +304,47 @@ export type FinalAcceptanceResult = {
   };
   findings: string[];
   rules: string[];
+  summary: string;
+  generatedAt: string;
+};
+
+export type AutoAdvanceAction =
+  | "prepare-task-plan"
+  | "dispatch-task"
+  | "controlled-task"
+  | "run-validation"
+  | "run-page-smoke"
+  | "write-knowledge"
+  | "finalize-delivery"
+  | "done"
+  | "wait"
+  | "blocked";
+
+export type AutoAdvanceStatus = "success" | "waiting" | "blocked" | "error";
+
+export type AutoAdvanceResult = {
+  status: AutoAdvanceStatus;
+  action: AutoAdvanceAction;
+  didRun: boolean;
+  nextAction: string;
+  reason: string[];
+  contextPackage?: ContextPackageResult | null;
+  executionPackage?: ExecutionPackageResult | null;
+  taskPlan?: TaskPlanResult | null;
+  taskDispatch?: TaskDispatchResult | null;
+  controlledExecution?: ControlledTaskExecutionResult | null;
+  validationRun?: ValidationRunResult | null;
+  pageSmoke?: PageSmokeTestResult | null;
+  knowledgeWrite?: KnowledgeWriteResult | null;
+  finalAcceptance?: FinalAcceptanceResult | null;
+  steps?: Array<{
+    action: AutoAdvanceAction;
+    status: AutoAdvanceStatus;
+    didRun: boolean;
+    summary: string;
+    nextAction: string;
+    generatedAt: string;
+  }>;
   summary: string;
   generatedAt: string;
 };

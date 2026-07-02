@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateDeliveryMarkdown } from "./markdown";
 import {
+  autoAdvanceOnce as requestAutoAdvanceOnce,
+  autoRunUntilPause as requestAutoRunUntilPause,
   createIssueFixTask as requestIssueFixTask,
   dispatchTask as requestTaskDispatch,
   finalizeDelivery as requestFinalAcceptance,
@@ -39,6 +41,7 @@ import {
 import type {
   AiAdapterStatusResult,
   AiAdapterTaskRunResult,
+  AutoAdvanceResult,
   AutoDryRunResult,
   ContextPackageResult,
   ControlledTaskExecutionResult,
@@ -66,6 +69,19 @@ import type {
 import { collectIssues, evaluateWorkflow, summarizeProgress } from "./workflow";
 
 type TabKey = "task" | "plan" | "issues" | "result";
+
+type ExecutionDecision = {
+  phase: string;
+  status: StepStatus;
+  owner: "用户" | "系统 AI" | "写代码 AI" | "测试" | "无需处理";
+  nextAction: string;
+  reason: string[];
+  humanAction: string;
+  systemAction: string;
+  canAutoProceed: boolean;
+  currentTaskId: string | null;
+  blockers: string[];
+};
 
 const permissionLabels: Record<PermissionKey, { title: string; description: string }> = {
   allowWriteCode: {
@@ -210,6 +226,14 @@ function finalPanelStatus(result: FinalAcceptanceResult | null): StepStatus {
   if (result.status === "success") return "done";
   if (result.status === "blocked" || result.status === "error") return "failed";
   return "risk";
+}
+
+function aiAdapterModeLabel(status: AiAdapterStatusResult | null) {
+  if (!status) return "未检查";
+  if (status.provider === "command") return status.canAutoRun ? "本地命令自动执行" : "本地命令未配置";
+  if (status.provider === "mock") return "可自动测试";
+  if (status.provider === "disabled") return "已禁用";
+  return "需手工交接";
 }
 
 function mergeDeliveryIssues(...issueGroups: DeliveryIssue[][]) {
@@ -378,6 +402,307 @@ function deliveryNextAction({
   if (!finalAcceptance) return "知识沉淀已完成，下一步生成总验收。";
   if (finalAcceptance.status === "success") return "交付闭环已完成，可以提交代码或进入下一个模块。";
   return "总验收仍有风险，先处理验收发现。";
+}
+
+function buildExecutionDecision({
+  task,
+  taskPlan,
+  taskDispatch,
+  taskReview,
+  aiAdapterStatus,
+  controlledExecution,
+  pageSmoke,
+  validationRun,
+  knowledgeWrite,
+  finalAcceptance,
+  issues,
+}: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult | null;
+  taskDispatch: TaskDispatchResult | null;
+  taskReview: TaskReviewResult | null;
+  aiAdapterStatus: AiAdapterStatusResult | null;
+  controlledExecution: ControlledTaskExecutionResult | null;
+  pageSmoke: PageSmokeTestResult | null;
+  validationRun: ValidationRunResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+  issues: DeliveryIssue[];
+}): ExecutionDecision {
+  const p0Blockers = issues.filter((item) => item.level === "P0" && !item.canContinue);
+  if (p0Blockers.length) {
+    return {
+      phase: "阻断确认",
+      status: "failed",
+      owner: "用户",
+      nextAction: "先处理不可继续的 P0 问题，再恢复自动交付。",
+      reason: p0Blockers.map((item) => `${item.id}：${item.title}`),
+      humanAction: "确认阻断问题的真实原因，补充接口、权限、需求或项目环境信息。",
+      systemAction: "暂停派发新任务，只保留问题池和修复任务入口。",
+      canAutoProceed: false,
+      currentTaskId: null,
+      blockers: p0Blockers.map((item) => item.title),
+    };
+  }
+
+  if (!hasText(task.projectName) || !hasText(task.projectPath) || !hasText(task.moduleName) || !hasText(task.requirement)) {
+    return {
+      phase: "资料补齐",
+      status: "pending",
+      owner: "用户",
+      nextAction: "先补齐项目名称、真实项目路径、模块名称和需求说明。",
+      reason: ["任务包的基础信息还不完整，系统 AI 不能稳定生成设计与任务队列。"],
+      humanAction: "补齐一次性任务包，并尽量提供接口文档、Demo、旧项目和 PRD。",
+      systemAction: "等待资料完整后扫描项目并生成上下文。",
+      canAutoProceed: false,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (!taskPlan?.tasks.length) {
+    return {
+      phase: "生成设计",
+      status: "pending",
+      owner: "系统 AI",
+      nextAction: "生成 AI 上下文包、交付执行包和设计与任务队列。",
+      reason: ["还没有 task-queue，写代码 AI 不应该直接开始写完整模块。"],
+      humanAction: "确认资料路径有效，必要时先点击扫描项目。",
+      systemAction: "读取资料并拆成小任务，每个任务带 allowedFiles 和验收标准。",
+      canAutoProceed: true,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (controlledExecution?.status === "manual-required") {
+    return {
+      phase: "等待手工交接",
+      status: "running",
+      owner: "用户",
+      nextAction: `把 ${controlledExecution.taskId} prompt 交给写代码 AI，并回填完成报告。`,
+      reason: [controlledExecution.summary],
+      humanAction: "复制受控执行生成的 prompt 给写代码 AI，拿到报告后提交系统 review。",
+      systemAction: "保留执行锁、adapter 输出和 git diff 检查上下文。",
+      canAutoProceed: false,
+      currentTaskId: controlledExecution.taskId,
+      blockers: [],
+    };
+  }
+
+  const currentTask = currentQueueTask(taskPlan);
+  if (taskPlan.tasks.some((item) => item.status === "blocked")) {
+    return {
+      phase: "任务阻断",
+      status: "failed",
+      owner: "用户",
+      nextAction: "先查看 blocked 任务的 review 和问题记录。",
+      reason: ["任务队列里已有 blocked 状态，继续派发后续任务会扩大风险。"],
+      humanAction: "确认 blocked 原因，决定补资料、改接口、还是生成修复任务。",
+      systemAction: "保留当前队列状态，不自动推进后续任务。",
+      canAutoProceed: false,
+      currentTaskId: currentTask?.id || null,
+      blockers: taskPlan.tasks.filter((item) => item.status === "blocked").map((item) => `${item.id} ${item.title}`),
+    };
+  }
+
+  if (currentTask?.fixOf) {
+    return {
+      phase: "修复优先",
+      status: currentTask.status === "assigned" ? "running" : "risk",
+      owner: currentTask.status === "assigned" ? "写代码 AI" : "系统 AI",
+      nextAction:
+        currentTask.status === "assigned"
+          ? `等待写代码 AI 回填修复任务 ${currentTask.id} 完成报告。`
+          : `优先派发修复任务 ${currentTask.id}。`,
+      reason: [`${currentTask.id} 是 ${currentTask.fixOf} 的修复任务，必须先完成它再继续后续任务。`],
+      humanAction: currentTask.status === "assigned" ? "把写代码 AI 的完成报告贴回系统。" : "复制修复任务 prompt 给写代码 AI，或使用受控执行。",
+      systemAction: "review 修复报告，检查 git diff 是否仍在 allowedFiles 内。",
+      canAutoProceed: currentTask.status !== "assigned",
+      currentTaskId: currentTask.id,
+      blockers: [],
+    };
+  }
+
+  if (currentTask?.status === "assigned") {
+    return {
+      phase: "等待报告",
+      status: "running",
+      owner: "写代码 AI",
+      nextAction: `等待写代码 AI 回填 ${currentTask.id} 完成报告，然后提交系统 review。`,
+      reason: [taskDispatch?.taskId === currentTask.id ? "当前任务已派发 prompt。" : "任务队列显示当前任务处于 assigned 状态。"],
+      humanAction: "收集写代码 AI 的完成报告，包含改动文件、完成内容、命令结果、未完成内容和新增问题。",
+      systemAction: "收到报告后执行轻量 review 和 allowedFiles 检查。",
+      canAutoProceed: false,
+      currentTaskId: currentTask.id,
+      blockers: [],
+    };
+  }
+
+  if (currentTask?.status === "needs-fix") {
+    return {
+      phase: "生成修复",
+      status: "risk",
+      owner: "系统 AI",
+      nextAction: `为 ${currentTask.id} 生成或派发修复任务。`,
+      reason: [taskReview?.summary || "最近一次 review 未通过，需要先修复再继续。"],
+      humanAction: "确认 review 发现是否准确；若准确，继续修复任务。",
+      systemAction: "把 review 发现转成 fix task，并限制修复范围。",
+      canAutoProceed: true,
+      currentTaskId: currentTask.id,
+      blockers: [],
+    };
+  }
+
+  if (currentTask?.status === "pending") {
+    const canUseAdapter = aiAdapterStatus?.canAutoRun || aiAdapterStatus?.provider === "mock";
+    return {
+      phase: "派发任务",
+      status: "pending",
+      owner: "系统 AI",
+      nextAction: canUseAdapter ? `受控执行当前任务 ${currentTask.id}。` : `复制 ${currentTask.id} prompt 给写代码 AI。`,
+      reason: [`${currentTask.id} 的依赖已满足，可以成为当前唯一执行任务。`],
+      humanAction: canUseAdapter ? "确认允许自动写代码和运行命令。" : "把当前 task prompt 交给写代码 AI。",
+      systemAction: canUseAdapter ? "锁定当前任务，调用 AI adapter，完成后 review。" : "记录派发基线，等待报告回填。",
+      canAutoProceed: Boolean(canUseAdapter && task.permissions.allowWriteCode),
+      currentTaskId: currentTask.id,
+      blockers: [],
+    };
+  }
+
+  const allTasksDone = taskPlan.tasks.length > 0 && taskPlan.tasks.every((item) => item.status === "done");
+  if (!allTasksDone) {
+    return {
+      phase: "等待依赖",
+      status: "running",
+      owner: "系统 AI",
+      nextAction: "继续检查任务依赖，等待下一个可派发任务出现。",
+      reason: ["当前没有可派发任务，但任务队列还没有全部完成。"],
+      humanAction: "检查任务依赖是否合理，必要时重新生成任务队列。",
+      systemAction: "保持队列状态，不越过依赖执行。",
+      canAutoProceed: false,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (!validationRun) {
+    return {
+      phase: "命令验收",
+      status: "pending",
+      owner: "测试",
+      nextAction: "执行命令验收：typecheck / lint / build。",
+      reason: ["任务队列已完成，但还没有命令级验证。"],
+      humanAction: "确认允许运行目标项目已有脚本。",
+      systemAction: "只运行 package.json 中声明的受控脚本并记录结果。",
+      canAutoProceed: task.permissions.allowRunCommands,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (validationRun.status !== "success") {
+    return {
+      phase: "命令修复",
+      status: "risk",
+      owner: "系统 AI",
+      nextAction: "根据命令验收失败结果生成修复任务。",
+      reason: [validationRun.summary],
+      humanAction: "确认失败命令是否来自真实代码问题、依赖缺失还是环境问题。",
+      systemAction: "把失败命令和输出沉淀到问题池，并转成修复任务。",
+      canAutoProceed: task.permissions.allowAutoFix,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (!pageSmoke) {
+    return {
+      phase: "页面点测",
+      status: "pending",
+      owner: "测试",
+      nextAction: "执行轻量页面点测。",
+      reason: ["命令验收已通过，但页面 URL、关键词和明显错误文本还没有检查。"],
+      humanAction: "确认任务包里的页面点测 URL 和关键词是否准确。",
+      systemAction: "请求页面并检查 HTTP、标题、关键词和常见错误文本。",
+      canAutoProceed: Boolean(task.pageUrl && task.permissions.allowRunCommands),
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (pageSmoke.status === "failed" || pageSmoke.status === "error") {
+    return {
+      phase: "页面修复",
+      status: "risk",
+      owner: "系统 AI",
+      nextAction: "根据页面点测失败结果生成修复任务。",
+      reason: [pageSmoke.summary],
+      humanAction: "确认缺失关键词是否为真实问题，或更新点测关键词。",
+      systemAction: "把 URL、HTTP 状态、缺失关键词和错误文本沉淀到问题池。",
+      canAutoProceed: task.permissions.allowAutoFix,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (knowledgeWrite?.status !== "success") {
+    return {
+      phase: "知识沉淀",
+      status: knowledgeWrite ? "risk" : "pending",
+      owner: "系统 AI",
+      nextAction: "写入知识库，沉淀项目实例、问题和验收记录。",
+      reason: [knowledgeWrite?.summary || "任务、命令和页面点测已有结果，但知识库还没有完整记录。"],
+      humanAction: "确认允许写入知识库目录。",
+      systemAction: "写入模块资料包、问题追踪、测试用例、验收报告和交付报告。",
+      canAutoProceed: task.permissions.allowKnowledgeWrite,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (!finalAcceptance) {
+    return {
+      phase: "总验收",
+      status: "pending",
+      owner: "系统 AI",
+      nextAction: "生成总验收和规则沉淀候选。",
+      reason: ["任务、命令、页面点测和知识沉淀已有结果，但还没有最终收口文件。"],
+      humanAction: "确认问题池中是否有需要人工解释的问题。",
+      systemAction: "生成 final-acceptance.auto.md 和规则沉淀候选.auto.md。",
+      canAutoProceed: true,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  if (finalAcceptance.status === "success") {
+    return {
+      phase: "交付完成",
+      status: "done",
+      owner: "无需处理",
+      nextAction: "当前模块交付闭环完成，可以提交代码或进入下一个模块。",
+      reason: [finalAcceptance.summary],
+      humanAction: "人工最终确认后提交代码。",
+      systemAction: "保留运行记录和知识沉淀，等待新模块任务。",
+      canAutoProceed: false,
+      currentTaskId: null,
+      blockers: [],
+    };
+  }
+
+  return {
+    phase: "验收风险",
+    status: "risk",
+    owner: "用户",
+    nextAction: "先处理总验收发现，再决定是否修复或人工放行。",
+    reason: finalAcceptance.findings.length ? finalAcceptance.findings : [finalAcceptance.summary],
+    humanAction: "逐条确认验收发现，必要时转成修复任务。",
+    systemAction: "保留规则候选和验收记录，等待人工确认。",
+    canAutoProceed: false,
+    currentTaskId: null,
+    blockers: [],
+  };
 }
 
 function createRunId() {
@@ -749,6 +1074,66 @@ function DeliveryControlPanel({
   );
 }
 
+function ExecutionDecisionPanel({ decision }: { decision: ExecutionDecision }) {
+  return (
+    <section className={`flat-panel execution-decision-panel decision-${decision.status}`}>
+      <div className="scan-head">
+        <div>
+          <h2>执行决策</h2>
+          <p>系统 AI 用这个面板判断当前阶段、下一步动作、责任方和能否自动推进。</p>
+        </div>
+        <StatusBadge status={decision.status} />
+      </div>
+
+      <div className="decision-hero">
+        <div>
+          <span>当前阶段</span>
+          <strong>{decision.phase}</strong>
+          {decision.currentTaskId ? <small>当前任务：{decision.currentTaskId}</small> : <small>当前任务：无</small>}
+        </div>
+        <div>
+          <span>下一步</span>
+          <strong>{decision.nextAction}</strong>
+          <small>责任方：{decision.owner}</small>
+        </div>
+        <div>
+          <span>自动推进</span>
+          <strong>{decision.canAutoProceed ? "可以" : "不建议"}</strong>
+          <small>{decision.canAutoProceed ? "满足授权或可由系统触发" : "需要人工输入、确认或等待报告"}</small>
+        </div>
+      </div>
+
+      <div className="decision-grid">
+        <article>
+          <h3>判断依据</h3>
+          <ul>
+            {decision.reason.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </article>
+        <article>
+          <h3>人要做</h3>
+          <p>{decision.humanAction}</p>
+        </article>
+        <article>
+          <h3>系统做</h3>
+          <p>{decision.systemAction}</p>
+        </article>
+      </div>
+
+      {decision.blockers.length ? (
+        <div className="decision-blockers">
+          <strong>阻断项</strong>
+          {decision.blockers.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function IssueTable({
   issues,
   taskPlan,
@@ -931,11 +1316,7 @@ function TaskPlanPanel({
       <div className="ai-adapter-panel">
         <div>
           <strong>AI adapter</strong>
-          <span>
-            {aiAdapterStatus
-              ? `${aiAdapterStatus.provider} · ${aiAdapterStatus.canAutoRun ? "可自动测试" : "需手工交接"}`
-              : "未检查"}
-          </span>
+          <span>{aiAdapterStatus ? `${aiAdapterStatus.provider} · ${aiAdapterModeLabel(aiAdapterStatus)}` : "未检查"}</span>
         </div>
         <p>{aiAdapterStatus?.summary || "用于把当前 task 交给可替换的 AI provider。默认 manual，不会调用外部 AI。"}</p>
         {aiAdapterStatus?.warnings.length ? (
@@ -1515,6 +1896,7 @@ function App() {
   const [aiAdapterStatus, setAiAdapterStatus] = useState<AiAdapterStatusResult | null>(null);
   const [aiAdapterRun, setAiAdapterRun] = useState<AiAdapterTaskRunResult | null>(null);
   const [controlledExecution, setControlledExecution] = useState<ControlledTaskExecutionResult | null>(null);
+  const [lastAutoAdvance, setLastAutoAdvance] = useState<AutoAdvanceResult | null>(null);
   const [taskDispatch, setTaskDispatch] = useState<TaskDispatchResult | null>(null);
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
@@ -1544,6 +1926,8 @@ function App() {
   const [runningPageSmoke, setRunningPageSmoke] = useState(false);
   const [runningValidation, setRunningValidation] = useState(false);
   const [finalizingAcceptance, setFinalizingAcceptance] = useState(false);
+  const [autoAdvancing, setAutoAdvancing] = useState(false);
+  const [autoRunning, setAutoRunning] = useState(false);
   const [savingRunRecord, setSavingRunRecord] = useState(false);
   const [loadingRunRecord, setLoadingRunRecord] = useState(false);
   const [loadingRunHistory, setLoadingRunHistory] = useState(false);
@@ -1559,6 +1943,35 @@ function App() {
   const issueRules = useMemo(() => issueRuleSuggestions(issues), [issues]);
   const progress = useMemo(() => summarizeProgress(steps), [steps]);
   const markdown = useMemo(() => generateDeliveryMarkdown(task, steps, issues, projectScan), [task, steps, issues, projectScan]);
+  const executionDecision = useMemo(
+    () =>
+      buildExecutionDecision({
+        task,
+        taskPlan,
+        taskDispatch,
+        taskReview,
+        aiAdapterStatus,
+        controlledExecution,
+        pageSmoke,
+        validationRun,
+        knowledgeWrite,
+        finalAcceptance,
+        issues,
+      }),
+    [
+      task,
+      taskPlan,
+      taskDispatch,
+      taskReview,
+      aiAdapterStatus,
+      controlledExecution,
+      pageSmoke,
+      validationRun,
+      knowledgeWrite,
+      finalAcceptance,
+      issues,
+    ],
+  );
 
   useEffect(() => {
     saveTask(task);
@@ -2542,6 +2955,115 @@ function App() {
     }
   }
 
+  async function applyAutoAdvanceResult(result: AutoAdvanceResult) {
+    setLastAutoAdvance(result);
+
+    const overrides: Partial<DeliveryRunRecord> = {};
+    if (result.contextPackage) {
+      setContextPackage(result.contextPackage);
+      overrides.contextPackage = result.contextPackage;
+    }
+    if (result.executionPackage) {
+      setExecutionPackage(result.executionPackage);
+      overrides.executionPackage = result.executionPackage;
+    }
+    if (result.taskPlan) {
+      setTaskPlan(result.taskPlan);
+      setAutoDryRun(null);
+      overrides.taskPlan = result.taskPlan;
+      overrides.autoDryRun = null;
+    }
+    if (result.taskDispatch) {
+      setTaskDispatch(result.taskDispatch);
+      overrides.taskPlan = result.taskDispatch.updatedTaskPlan || result.taskPlan || taskPlan;
+    }
+    if (result.controlledExecution) {
+      setControlledExecution(result.controlledExecution);
+      overrides.controlledExecution = result.controlledExecution;
+      overrides.taskPlan = result.controlledExecution.updatedTaskPlan || result.taskPlan || taskPlan;
+    }
+    if (result.validationRun) {
+      setValidationRun(result.validationRun);
+      const finalStatus: StepStatus = result.validationRun.status === "success" ? "done" : result.validationRun.status === "error" ? "failed" : "risk";
+      const nextRuntime = { ...runtime, "test-running": finalStatus };
+      setRuntime(nextRuntime);
+      overrides.validationRun = result.validationRun;
+      overrides.runtime = nextRuntime;
+    }
+    if (result.pageSmoke) {
+      setPageSmoke(result.pageSmoke);
+      overrides.pageSmoke = result.pageSmoke;
+    }
+    if (result.knowledgeWrite) {
+      setKnowledgeWrite(result.knowledgeWrite);
+      const finalStatus: StepStatus = result.knowledgeWrite.status === "success" ? "done" : "failed";
+      const nextRuntime = { ...runtime, "knowledge-write": finalStatus, "delivery-complete": result.knowledgeWrite.status === "success" ? "done" : runtime["delivery-complete"] };
+      setRuntime(nextRuntime);
+      overrides.knowledgeWrite = result.knowledgeWrite;
+      overrides.runtime = nextRuntime;
+    }
+    if (result.finalAcceptance) {
+      setFinalAcceptance(result.finalAcceptance);
+      overrides.finalAcceptance = result.finalAcceptance;
+    }
+
+    appendLog(result.summary, result.status === "success" ? "success" : result.status === "blocked" || result.status === "error" ? "error" : "warning");
+    await saveCurrentRunRecord(true, overrides);
+  }
+
+  async function autoAdvanceCurrentRun() {
+    setAutoAdvancing(true);
+    appendLog("系统 AI 开始自动推进一个安全小步。", "info");
+
+    try {
+      const result = await requestAutoAdvanceOnce({
+        task,
+        projectScan,
+        steps,
+        issues,
+        validationRun,
+        pageSmoke,
+        knowledgeWrite,
+        finalAcceptance,
+        taskPlan,
+        markdown,
+      });
+      await applyAutoAdvanceResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? "自动推进失败" : "自动推进失败";
+      appendLog(error instanceof Error ? error.message : message, "error");
+    } finally {
+      setAutoAdvancing(false);
+    }
+  }
+
+  async function autoRunCurrentRunUntilPause() {
+    setAutoRunning(true);
+    appendLog("系统 AI 开始自动运行到暂停点。", "info");
+
+    try {
+      const result = await requestAutoRunUntilPause({
+        task,
+        projectScan,
+        steps,
+        issues,
+        validationRun,
+        pageSmoke,
+        knowledgeWrite,
+        finalAcceptance,
+        taskPlan,
+        markdown,
+        maxSteps: 20,
+      });
+      await applyAutoAdvanceResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "自动运行失败";
+      appendLog(message, "error");
+    } finally {
+      setAutoRunning(false);
+    }
+  }
+
   const blockingIssues = issues.filter((item) => item.level === "P0" && !item.canContinue);
   const continuableIssues = issues.filter((item) => item.level !== "P0" || item.canContinue);
 
@@ -2728,6 +3250,7 @@ function App() {
                 <p>这些卡片不是审批节点，而是 AI 自动交付时的内部进度。普通风险会归档并继续执行，真正危险才阻断。</p>
               </div>
             </div>
+            <ExecutionDecisionPanel decision={executionDecision} />
             <div className="step-grid">
               {steps.map((step, index) => (
                 <StepCard key={step.id} step={step} index={index} />
@@ -2822,6 +3345,12 @@ function App() {
                 <p>当前阶段生成可复制的 Markdown，并可把内容写回 Obsidian 知识库和项目实例目录。</p>
               </div>
               <div className="top-actions">
+                <button className="primary-button" onClick={autoAdvanceCurrentRun} disabled={autoAdvancing}>
+                  {autoAdvancing ? "推进中" : "自动推进一步"}
+                </button>
+                <button className="primary-button" onClick={autoRunCurrentRunUntilPause} disabled={autoRunning || autoAdvancing}>
+                  {autoRunning ? "运行中" : "自动运行到暂停点"}
+                </button>
                 <button className="secondary-button" onClick={prepareCurrentContextPackage} disabled={preparingContext}>
                   {preparingContext ? "生成中" : "生成 AI 上下文包"}
                 </button>
@@ -2851,6 +3380,26 @@ function App() {
                 </button>
               </div>
             </div>
+            <ExecutionDecisionPanel decision={executionDecision} />
+            {lastAutoAdvance ? (
+              <section className={`flat-panel auto-advance-result auto-advance-${lastAutoAdvance.status}`}>
+                <div>
+                  <span>最近自动推进</span>
+                  <strong>{lastAutoAdvance.action}</strong>
+                </div>
+                <p>{lastAutoAdvance.summary}</p>
+                <small>下一步：{lastAutoAdvance.nextAction}</small>
+                {lastAutoAdvance.steps?.length ? (
+                  <ul>
+                    {lastAutoAdvance.steps.map((step, index) => (
+                      <li key={`${step.action}-${index}`}>
+                        {index + 1}. {step.action} / {step.status}：{step.summary}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            ) : null}
             <DeliveryControlPanel
               taskPlan={taskPlan}
               reviewResult={taskReview}
