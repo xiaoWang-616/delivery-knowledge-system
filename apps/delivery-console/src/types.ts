@@ -137,6 +137,7 @@ export type TaskQueueItem = {
   inputs: string[];
   acceptance: string[];
   promptFile: string;
+  baselineChangedFiles?: string[];
 };
 
 export type TaskPlanResult = {
@@ -166,8 +167,20 @@ export type TaskReviewResult = {
   taskId: string;
   nextTaskId: string | null;
   findings: string[];
+  changedFiles: string[];
+  outOfScopeFiles: string[];
   reviewFile: string;
   fixPromptFile: string | null;
+  updatedTaskPlan: TaskPlanResult | null;
+  summary: string;
+  generatedAt: string;
+};
+
+export type IssueFixTaskResult = {
+  status: "success" | "error";
+  taskId: string;
+  issueId: string;
+  promptFile: string;
   updatedTaskPlan: TaskPlanResult | null;
   summary: string;
   generatedAt: string;

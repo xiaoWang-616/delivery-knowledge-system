@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const port = Number(process.env.DELIVERY_RUNNER_PORT || 5176);
 const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const knowledgeRoot = process.env.DELIVERY_KB_ROOT || join(runnerDirectory, "../../..");
+const codingAgentProtocolPath = join(knowledgeRoot, "02-模块交付", "写代码AI单任务协议.md");
 const maxPreviewItems = 80;
 const ignoredNames = new Set([
   ".git",
@@ -1887,6 +1888,10 @@ ${taskItem.goal}
 
 ${formatList(taskItem.inputs)}
 
+## 必须遵守
+
+- ${codingAgentProtocolPath}
+
 ## 允许改动范围
 
 ${formatList(taskItem.allowedFiles)}
@@ -2172,7 +2177,7 @@ function writeTaskPlanState(task, taskPlan, tasks, extraFiles = []) {
   return nextPlan;
 }
 
-function dispatchTask(payload) {
+async function dispatchTask(payload) {
   const task = payload.task || {};
   const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
   const targetTask = payload.taskId ? tasks.find((item) => item.id === payload.taskId) : nextDispatchableTask(tasks);
@@ -2186,6 +2191,9 @@ function dispatchTask(payload) {
 
   if (targetTask.status === "pending") {
     targetTask.status = "assigned";
+  }
+  if (!Array.isArray(targetTask.baselineChangedFiles)) {
+    targetTask.baselineChangedFiles = await collectGitChangedFiles(task);
   }
 
   const promptPath = join(planDirectory, targetTask.promptFile);
@@ -2255,6 +2263,122 @@ function reviewDecisionFromReport(report) {
   return { decision: "approved", findings: ["报告结构完整，未发现阻断或未完成描述。"] };
 }
 
+function normalizePathForMatch(value) {
+  return String(value || "").replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function globToRegExp(pattern) {
+  const normalized = normalizePathForMatch(pattern);
+  let source = "";
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+    if (char === "*" && next === "*") {
+      source += ".*";
+      index += 1;
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else {
+      source += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function isAllowedChangedFile(filePath, allowedFiles = []) {
+  const normalizedPath = normalizePathForMatch(filePath);
+  return allowedFiles.some((pattern) => {
+    const normalizedPattern = normalizePathForMatch(pattern);
+    if (!normalizedPattern || normalizedPattern === "**/*") return true;
+    if (normalizedPattern.endsWith("/**/*")) {
+      return normalizedPath.startsWith(normalizedPattern.slice(0, -4));
+    }
+    if (normalizedPattern.endsWith("/**")) {
+      return normalizedPath.startsWith(normalizedPattern.slice(0, -2));
+    }
+    return globToRegExp(normalizedPattern).test(normalizedPath);
+  });
+}
+
+function parseGitStatusFiles(output) {
+  return String(output || "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const value = line.slice(3).trim();
+      const renamed = value.includes(" -> ") ? value.split(" -> ").pop() : value;
+      return normalizePathForMatch(renamed);
+    })
+    .filter(Boolean);
+}
+
+async function collectGitReviewScope(task, taskItem) {
+  const projectPath = task?.projectPath;
+  if (!projectPath || !existsSync(projectPath) || !statSync(projectPath).isDirectory()) {
+    return {
+      status: "skipped",
+      changedFiles: [],
+      outOfScopeFiles: [],
+      message: "目标项目路径不存在，跳过 git diff 越界检查。",
+    };
+  }
+
+  if (!existsSync(join(projectPath, ".git"))) {
+    return {
+      status: "skipped",
+      changedFiles: [],
+      outOfScopeFiles: [],
+      message: "目标项目不是 git 仓库，跳过 git diff 越界检查。",
+    };
+  }
+
+  const result = await runProcess({
+    command: "git",
+    args: ["status", "--short"],
+    cwd: projectPath,
+    timeoutMs: 30000,
+  });
+
+  if (result.status !== "passed") {
+    return {
+      status: "error",
+      changedFiles: [],
+      outOfScopeFiles: [],
+      message: `git status 执行失败：${result.output}`,
+    };
+  }
+
+  const changedFiles = parseGitStatusFiles(result.output);
+  const baseline = new Set((taskItem.baselineChangedFiles || []).map((filePath) => normalizePathForMatch(filePath)));
+  const taskChangedFiles = changedFiles.filter((filePath) => !baseline.has(filePath));
+  const outOfScopeFiles = taskChangedFiles.filter((filePath) => !isAllowedChangedFile(filePath, taskItem.allowedFiles));
+  return {
+    status: outOfScopeFiles.length ? "warning" : "ok",
+    changedFiles: taskChangedFiles,
+    outOfScopeFiles,
+    message: taskChangedFiles.length
+      ? `检测到 ${taskChangedFiles.length} 个本任务新增/变更文件，${outOfScopeFiles.length} 个超出当前任务允许范围。`
+      : "派发任务后未检测到新的 git 改动文件。",
+  };
+}
+
+async function collectGitChangedFiles(task) {
+  const projectPath = task?.projectPath;
+  if (!projectPath || !existsSync(projectPath) || !statSync(projectPath).isDirectory() || !existsSync(join(projectPath, ".git"))) {
+    return [];
+  }
+
+  const result = await runProcess({
+    command: "git",
+    args: ["status", "--short"],
+    cwd: projectPath,
+    timeoutMs: 30000,
+  });
+
+  return result.status === "passed" ? parseGitStatusFiles(result.output) : [];
+}
+
 function nextFixTaskId(tasks, taskId) {
   const base = `${taskId}-fix`;
   if (!tasks.some((item) => item.id === base)) return base;
@@ -2263,6 +2387,31 @@ function nextFixTaskId(tasks, taskId) {
     index += 1;
   }
   return `${base}-${index}`;
+}
+
+function taskIdSegment(value, fallback = "issue") {
+  const segment = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return segment || fallback;
+}
+
+function nextIssueFixTaskId(tasks, issueId) {
+  const base = `issue-${taskIdSegment(issueId)}-fix`;
+  if (!tasks.some((item) => item.id === base)) return base;
+  let index = 2;
+  while (tasks.some((item) => item.id === `${base}-${index}`)) {
+    index += 1;
+  }
+  return `${base}-${index}`;
+}
+
+function collectAllowedFilesFromTasks(tasks) {
+  const files = tasks.flatMap((item) => (Array.isArray(item.allowedFiles) ? item.allowedFiles : []));
+  return Array.from(new Set(files.length ? files : ["src/**/*", "docs/**/*"]));
 }
 
 function createFixTask(originalTask, findings, reviewFile) {
@@ -2310,6 +2459,10 @@ ${report.trim()}
 
 - ${reviewFile}
 
+## 必须遵守
+
+- ${codingAgentProtocolPath}
+
 ## 允许改动范围
 
 ${formatList(fixTask.allowedFiles)}
@@ -2332,7 +2485,116 @@ ${formatList(fixTask.forbidden)}
 `;
 }
 
-function createReviewFileContent(taskItem, decision, findings, report, nextTaskId) {
+function createIssueFixTask(issue, tasks) {
+  const id = nextIssueFixTaskId(tasks, issue.id);
+  return {
+    id,
+    title: `修复问题：${issue.title || issue.id}`,
+    status: "pending",
+    fixOf: issue.id,
+    dependsOn: [],
+    goal: `修复问题池中的 ${issue.id}：${issue.title}。只处理这个问题，不扩展新功能。`,
+    allowedFiles: collectAllowedFilesFromTasks(tasks),
+    forbidden: ["不重写整个模块", "不跳过命令验收", "不修改 allowedFiles 之外的文件", "不把接口缺口伪造成前端本地逻辑"],
+    inputs: ["问题池", "task-queue.auto.json", "review 文件", "命令验收结果"],
+    acceptance: ["问题描述已处理或明确降级", "没有新增越界改动", "完成后重新提交系统 review", "必要时更新问题池和规则沉淀"],
+    promptFile: `${id}.prompt.auto.md`,
+  };
+}
+
+function createIssueFixTaskPrompt(issue, fixTask, task) {
+  return `# ${fixTask.id} ${fixTask.title}
+
+你是写代码 AI。你现在只处理系统 AI 问题池中的一个问题，不要顺手做其他功能。
+
+## 真实项目
+
+- 项目：${task.projectName || "未命名项目"}
+- 路径：${task.projectPath || "未填写"}
+- 模块：${task.moduleName || "未命名模块"}
+
+## 问题卡
+
+- 编号：${issue.id}
+- 等级：${issue.level}
+- 责任方：${issue.owner}
+- 是否阻断：${issue.canContinue ? "不阻断，可继续后续流程" : "阻断，必须先处理"}
+- 标题：${issue.title}
+- 描述：${issue.description}
+
+## 修复目标
+
+${fixTask.goal}
+
+## 必须遵守
+
+- ${codingAgentProtocolPath}
+
+## 允许改动范围
+
+${formatList(fixTask.allowedFiles)}
+
+## 禁止事项
+
+${formatList(fixTask.forbidden)}
+
+## 验收标准
+
+${formatList(fixTask.acceptance)}
+
+## 完成后回报
+
+\`\`\`text
+任务编号：${fixTask.id}
+实际改动文件：
+完成内容：
+运行命令和结果：
+未完成内容：
+新增问题：
+建议下一步：
+\`\`\`
+`;
+}
+
+function createIssueFixTaskFromIssue(payload) {
+  const task = payload.task || {};
+  const issue = payload.issue || null;
+  if (!issue?.id) {
+    throw new Error("缺少问题卡 issue.id，不能生成修复任务。");
+  }
+
+  const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
+  const existingTask = tasks.find((item) => item.fixOf === issue.id && item.status !== "done");
+  if (existingTask) {
+    return {
+      status: "success",
+      taskId: existingTask.id,
+      issueId: issue.id,
+      promptFile: join(planDirectory, existingTask.promptFile),
+      updatedTaskPlan: updatedTaskPlan(taskPlan, tasks),
+      summary: `问题 ${issue.id} 已有未完成修复任务：${existingTask.id}。`,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  const fixTask = createIssueFixTask(issue, tasks);
+  tasks.push(fixTask);
+  const promptPath = join(planDirectory, fixTask.promptFile);
+  writeFileSync(promptPath, `${createIssueFixTaskPrompt(issue, fixTask, task).trim()}\n`, "utf8");
+  const nextPlan = writeTaskPlanState(task, taskPlan, tasks, [promptPath]);
+
+  return {
+    status: "success",
+    taskId: fixTask.id,
+    issueId: issue.id,
+    promptFile: promptPath,
+    updatedTaskPlan: nextPlan,
+    summary: `已为问题 ${issue.id} 生成修复任务：${fixTask.id}。`,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function createReviewFileContent(taskItem, decision, findings, report, nextTaskId, scope) {
   return `# ${taskItem.id} review（自动生成）
 
 ## 结论
@@ -2344,6 +2606,19 @@ function createReviewFileContent(taskItem, decision, findings, report, nextTaskI
 
 ${formatList(findings)}
 
+## git diff 范围检查
+
+- 状态：${scope.status}
+- 说明：${scope.message}
+
+### 本任务新增/变更文件
+
+${formatList(scope.changedFiles)}
+
+### 超出当前任务允许范围的文件
+
+${formatList(scope.outOfScopeFiles, "无")}
+
 ## 写代码 AI 报告
 
 \`\`\`text
@@ -2352,7 +2627,7 @@ ${report.trim()}
 `;
 }
 
-function reviewTaskResult(payload) {
+async function reviewTaskResult(payload) {
   const task = payload.task || {};
   const report = String(payload.report || "").trim();
   if (!report) {
@@ -2367,6 +2642,18 @@ function reviewTaskResult(payload) {
 
   currentTask.status = "submitted";
   const review = reviewDecisionFromReport(report);
+  const scope = await collectGitReviewScope(task, currentTask);
+  if (scope.status === "warning") {
+    review.findings.push(`存在超出当前任务允许范围的改动：${scope.outOfScopeFiles.join("、")}`);
+    if (review.decision === "approved") {
+      review.decision = "needs-fix";
+    }
+  } else if (scope.status === "error") {
+    review.findings.push(scope.message);
+    if (review.decision === "approved") {
+      review.decision = "needs-fix";
+    }
+  }
   const reviewsDirectory = join(planDirectory, "reviews");
   mkdirSync(reviewsDirectory, { recursive: true });
 
@@ -2398,7 +2685,7 @@ function reviewTaskResult(payload) {
 
   const nextTask = nextDispatchableTask(tasks);
   const reviewFile = join(reviewsDirectory, `${payload.taskId}-review-${timestampForFile()}.md`);
-  writeFileSync(reviewFile, `${createReviewFileContent(currentTask, review.decision, review.findings, report, nextTask?.id || null).trim()}\n`, "utf8");
+  writeFileSync(reviewFile, `${createReviewFileContent(currentTask, review.decision, review.findings, report, nextTask?.id || null, scope).trim()}\n`, "utf8");
 
   if (fixPromptPath) {
     const fixTask = tasks.find((item) => item.promptFile === basename(fixPromptPath));
@@ -2413,6 +2700,8 @@ function reviewTaskResult(payload) {
     taskId: currentTask.id,
     nextTaskId: nextDispatchableTask(tasks)?.id || null,
     findings: review.findings,
+    changedFiles: scope.changedFiles,
+    outOfScopeFiles: scope.outOfScopeFiles,
     reviewFile,
     fixPromptFile,
     updatedTaskPlan: nextPlan,
@@ -2453,6 +2742,7 @@ function createFinalAcceptanceContent(payload, tasks, reviews, counts, status, f
   const task = payload.task || {};
   const validationRun = payload.validationRun || null;
   const knowledgeWrite = payload.knowledgeWrite || null;
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
   const taskRows = tasks.length
     ? tasks
         .map(
@@ -2461,6 +2751,14 @@ function createFinalAcceptanceContent(payload, tasks, reviews, counts, status, f
         )
         .join("\n")
     : "| 无 | 无任务 | - | - | - |";
+  const issueRows = issues.length
+    ? issues
+        .map(
+          (issue) =>
+            `| ${tableCell(issue.id)} | ${tableCell(issue.level)} | ${tableCell(issue.title)} | ${tableCell(issue.owner)} | ${issue.canContinue ? "可继续" : "阻断"} | ${tableCell(issue.description)} |`,
+        )
+        .join("\n")
+    : "| 无 | 无 | 暂无运行问题 | 无 | 可继续 | - |";
 
   return `# ${task.moduleName || "未命名模块"} 总验收与知识沉淀（自动生成）
 
@@ -2479,6 +2777,12 @@ ${taskRows}
 ## 验收发现
 
 ${formatList(findings)}
+
+## 运行问题池
+
+| 编号 | 等级 | 问题 | 责任方 | 是否阻断 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+${issueRows}
 
 ## 命令验收
 
@@ -2510,6 +2814,7 @@ function finalizeDelivery(payload) {
   const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
   const counts = taskCounts(tasks);
   const reviews = reviewFiles(planDirectory);
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
   const findings = [];
   const rules = [];
 
@@ -2531,6 +2836,9 @@ function finalizeDelivery(payload) {
   if (!payload.knowledgeWrite) {
     findings.push("尚未写入知识库沉淀。");
   }
+  if (issues.length > 0) {
+    findings.push(`运行问题池记录了 ${issues.length} 个问题，需要在最终交付前逐项确认。`);
+  }
   if (!findings.length) {
     findings.push("任务队列全部完成，review、命令验收和知识沉淀均已有记录。");
   }
@@ -2544,7 +2852,14 @@ function finalizeDelivery(payload) {
   rules.push("写代码 AI 每次只执行当前 task prompt，系统 AI review 通过后再派发下一任务。");
   rules.push("最终交付前至少保留 task queue、review 文件、命令验收和总验收文件。");
 
-  const status = counts.blocked > 0 ? "blocked" : counts.done === counts.total && payload.validationRun && payload.knowledgeWrite ? "success" : "warning";
+  const hasBlockingIssue = issues.some((issue) => issue.level === "P0" && issue.canContinue === false);
+  const hasOpenIssues = issues.length > 0;
+  const status =
+    counts.blocked > 0 || hasBlockingIssue
+      ? "blocked"
+      : counts.done === counts.total && payload.validationRun && payload.knowledgeWrite && !hasOpenIssues
+        ? "success"
+        : "warning";
   const acceptanceFile = join(planDirectory, "final-acceptance.auto.md");
   const content = createFinalAcceptanceContent(payload, tasks, reviews, counts, status, findings, rules);
   writeFileSync(acceptanceFile, `${content.trim()}\n`, "utf8");
@@ -2872,7 +3187,7 @@ const server = createServer(async (request, response) => {
     try {
       const body = await readBody(request);
       const payload = body ? JSON.parse(body) : {};
-      const result = dispatchTask(payload);
+      const result = await dispatchTask(payload);
       sendJson(response, 200, result);
     } catch (error) {
       sendJson(response, 500, {
@@ -2887,11 +3202,31 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "POST" && request.url === "/api/create-issue-fix-task") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = createIssueFixTaskFromIssue(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        taskId: "",
+        issueId: "",
+        promptFile: "",
+        updatedTaskPlan: null,
+        summary: error instanceof Error ? error.message : "问题修复任务生成失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/review-task-result") {
     try {
       const body = await readBody(request);
       const payload = body ? JSON.parse(body) : {};
-      const result = reviewTaskResult(payload);
+      const result = await reviewTaskResult(payload);
       sendJson(response, 200, result);
     } catch (error) {
       sendJson(response, 500, {
@@ -2900,6 +3235,8 @@ const server = createServer(async (request, response) => {
         taskId: "",
         nextTaskId: null,
         findings: [error instanceof Error ? error.message : "任务 review 失败"],
+        changedFiles: [],
+        outOfScopeFiles: [],
         reviewFile: "",
         fixPromptFile: null,
         updatedTaskPlan: null,

@@ -716,6 +716,55 @@ h3 {
   white-space: pre-wrap;
 }
 
+.fix-task-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #f7dca6;
+  border-left: 3px solid var(--amber);
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.fix-task-callout span,
+.fix-task-callout strong,
+.fix-task-callout small {
+  display: block;
+}
+
+.fix-task-callout span {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.fix-task-callout strong {
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.fix-task-callout small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fix-task-callout code {
+  flex-shrink: 0;
+  max-width: 360px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: #8a5600;
+  background: #fff3d6;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .task-review-box {
   display: grid;
   gap: 10px;
@@ -758,6 +807,123 @@ h3 {
   padding-left: 18px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.review-file-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.review-file-grid article {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.review-file-grid strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.review-file-grid code,
+.review-file-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.review-out-of-scope {
+  border-color: #fecdd3 !important;
+  background: #fff1f2 !important;
+}
+
+.delivery-control-panel {
+  margin-bottom: 18px;
+}
+
+.delivery-next-action {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid #cfe4ff;
+  border-radius: 8px;
+  background: #f3f8ff;
+}
+
+.delivery-next-action span {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.delivery-next-action strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.delivery-control-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.delivery-control-card {
+  display: grid;
+  gap: 10px;
+  min-height: 138px;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-top: 3px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.delivery-control-card > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.delivery-control-card strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.delivery-control-card span,
+.delivery-control-card p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.delivery-control-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.control-done {
+  border-top-color: var(--green);
+}
+
+.control-running {
+  border-top-color: var(--blue);
+}
+
+.control-risk {
+  border-top-color: var(--amber);
+  background: #fffaf0;
+}
+
+.control-failed {
+  border-top-color: var(--red);
+  background: #fff1f2;
 }
 
 .final-grid {
@@ -809,6 +975,11 @@ h3 {
 .task-status-needs-fix,
 .task-status-blocked {
   border-left-color: var(--red);
+}
+
+.task-plan-fix-row {
+  border-left-color: var(--amber);
+  background: #fffaf0;
 }
 
 .task-plan-row div {
@@ -1155,6 +1326,7 @@ h3 {
 
 .dependency-list,
 .issue-table,
+.rule-suggestion-list,
 .log-list {
   display: grid;
   gap: 8px;
@@ -1162,6 +1334,7 @@ h3 {
 
 .dependency-row,
 .issue-row,
+.rule-suggestion-row,
 .log-row {
   display: grid;
   align-items: center;
@@ -1265,7 +1438,7 @@ h3 {
 }
 
 .issue-row {
-  grid-template-columns: 48px 180px minmax(0, 1fr);
+  grid-template-columns: 48px 180px minmax(0, 1fr) 128px;
   gap: 12px;
 }
 
@@ -1278,6 +1451,38 @@ h3 {
 }
 
 .issue-row small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.issue-fix-button {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: #344054;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.issue-fix-button:hover:not(:disabled) {
+  color: var(--blue);
+  border-color: #cfe4ff;
+  background: #f3f8ff;
+}
+
+.rule-suggestion-row {
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 12px;
+  border-left: 3px solid var(--green);
+}
+
+.rule-suggestion-row strong {
+  color: var(--green);
+}
+
+.rule-suggestion-row span {
   color: var(--muted);
   line-height: 1.45;
 }

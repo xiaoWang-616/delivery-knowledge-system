@@ -5,6 +5,7 @@ import type {
   DeliveryTask,
   ExecutionPackageResult,
   FinalAcceptanceResult,
+  IssueFixTaskResult,
   KnowledgeWriteResult,
   ProjectScanResult,
   RunRecordListResult,
@@ -212,6 +213,22 @@ export async function dispatchTask(payload: {
   return readJson<TaskDispatchResult>(response);
 }
 
+export async function createIssueFixTask(payload: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult;
+  issue: DeliveryIssue;
+}): Promise<IssueFixTaskResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/create-issue-fix-task`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<IssueFixTaskResult>(response);
+}
+
 export async function reviewTaskResult(payload: {
   task: DeliveryTask;
   taskPlan: TaskPlanResult;
@@ -232,6 +249,7 @@ export async function reviewTaskResult(payload: {
 export async function finalizeDelivery(payload: {
   task: DeliveryTask;
   taskPlan: TaskPlanResult;
+  issues: DeliveryIssue[];
   validationRun: ValidationRunResult | null;
   knowledgeWrite: KnowledgeWriteResult | null;
 }): Promise<FinalAcceptanceResult> {

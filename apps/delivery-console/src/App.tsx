@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateDeliveryMarkdown } from "./markdown";
 import {
+  createIssueFixTask as requestIssueFixTask,
   dispatchTask as requestTaskDispatch,
   finalizeDelivery as requestFinalAcceptance,
   getSystemHealth as requestSystemHealth,
@@ -32,6 +33,7 @@ import {
 } from "./storage";
 import type {
   ContextPackageResult,
+  DeliveryIssue,
   DeliveryRunRecord,
   DeliveryTask,
   ExecutionPackageResult,
@@ -144,6 +146,199 @@ function currentQueueTask(plan: TaskPlanResult | null) {
     plan.tasks.find((item) => item.status === "needs-fix") ||
     null
   );
+}
+
+function currentFixContext(plan: TaskPlanResult | null) {
+  if (!plan?.tasks.length) return null;
+  const fixTask =
+    plan.tasks.find((item) => item.fixOf && item.status === "assigned") ||
+    plan.tasks.find((item) => item.fixOf && item.status === "pending") ||
+    plan.tasks.find((item) => item.fixOf && item.status === "needs-fix") ||
+    null;
+  if (!fixTask) return null;
+  const sourceTask = plan.tasks.find((item) => item.id === fixTask.fixOf) || null;
+  return { fixTask, sourceTask };
+}
+
+function taskPlanPanelStatus(plan: TaskPlanResult | null): StepStatus {
+  if (!plan?.tasks.length) return "pending";
+  if (plan.tasks.some((item) => item.status === "blocked")) return "failed";
+  if (plan.tasks.some((item) => item.status === "needs-fix")) return "risk";
+  if (plan.tasks.every((item) => item.status === "done")) return "done";
+  if (plan.tasks.some((item) => item.status === "assigned" || item.status === "submitted" || item.status === "reviewed")) return "running";
+  return "pending";
+}
+
+function reviewPanelStatus(review: TaskReviewResult | null): StepStatus {
+  if (!review) return "pending";
+  if (review.decision === "approved") return "done";
+  if (review.decision === "blocked") return "failed";
+  return "risk";
+}
+
+function validationPanelStatus(result: ValidationRunResult | null): StepStatus {
+  if (!result) return "pending";
+  if (result.status === "success") return "done";
+  if (result.status === "error" || result.status === "failed") return "failed";
+  return "risk";
+}
+
+function knowledgePanelStatus(result: KnowledgeWriteResult | null): StepStatus {
+  if (!result) return "pending";
+  return result.status === "success" ? "done" : "failed";
+}
+
+function finalPanelStatus(result: FinalAcceptanceResult | null): StepStatus {
+  if (!result) return "pending";
+  if (result.status === "success") return "done";
+  if (result.status === "blocked" || result.status === "error") return "failed";
+  return "risk";
+}
+
+function mergeDeliveryIssues(...issueGroups: DeliveryIssue[][]) {
+  const merged = new Map<string, DeliveryIssue>();
+  for (const issue of issueGroups.flat()) {
+    if (!merged.has(issue.id)) {
+      merged.set(issue.id, issue);
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function runtimeIssue(
+  id: string,
+  level: DeliveryIssue["level"],
+  title: string,
+  description: string,
+  owner: DeliveryIssue["owner"],
+  canContinue: boolean,
+): DeliveryIssue {
+  return { id, level, title, description, owner, canContinue };
+}
+
+function deliveryRuntimeIssues({
+  reviewResult,
+  validationRun,
+  knowledgeWrite,
+  finalAcceptance,
+}: {
+  reviewResult: TaskReviewResult | null;
+  validationRun: ValidationRunResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+}) {
+  const runtimeIssues: DeliveryIssue[] = [];
+
+  if (reviewResult && reviewResult.decision !== "approved") {
+    runtimeIssues.push(
+      runtimeIssue(
+        `REVIEW-${reviewResult.taskId}`,
+        reviewResult.decision === "blocked" ? "P0" : "P1",
+        `系统 review 未通过：${reviewResult.taskId}`,
+        reviewResult.findings.length ? reviewResult.findings.join("；") : reviewResult.summary,
+        "AI",
+        reviewResult.decision !== "blocked",
+      ),
+    );
+  }
+
+  if (reviewResult?.outOfScopeFiles.length) {
+    runtimeIssues.push(
+      runtimeIssue(
+        `REVIEW-SCOPE-${reviewResult.taskId}`,
+        "P1",
+        "任务改动越界",
+        `以下文件不在当前任务 allowedFiles 内：${reviewResult.outOfScopeFiles.join("、")}。需要生成或执行修复任务。`,
+        "AI",
+        true,
+      ),
+    );
+  }
+
+  if (validationRun && validationRun.status !== "success" && validationRun.status !== "skipped") {
+    const failedCommands = validationRun.commands.filter((item) => item.status === "failed" || item.status === "timeout");
+    runtimeIssues.push(
+      runtimeIssue(
+        "VALIDATION-COMMANDS",
+        validationRun.status === "error" ? "P0" : "P1",
+        "命令验收未通过",
+        failedCommands.length
+          ? failedCommands.map((item) => `${item.name}：${commandStatusText[item.status]}`).join("；")
+          : validationRun.summary,
+        "测试",
+        validationRun.status !== "error",
+      ),
+    );
+  }
+
+  if (knowledgeWrite && knowledgeWrite.status !== "success") {
+    runtimeIssues.push(
+      runtimeIssue("KNOWLEDGE-WRITE", "P1", "知识库写入失败", knowledgeWrite.summary, "AI", true),
+    );
+  }
+
+  if (finalAcceptance && finalAcceptance.status !== "success") {
+    runtimeIssues.push(
+      runtimeIssue(
+        "FINAL-ACCEPTANCE",
+        finalAcceptance.status === "blocked" || finalAcceptance.status === "error" ? "P0" : "P1",
+        "总验收未完全通过",
+        finalAcceptance.findings.length ? finalAcceptance.findings.join("；") : finalAcceptance.summary,
+        "AI",
+        finalAcceptance.status === "warning",
+      ),
+    );
+  }
+
+  return runtimeIssues;
+}
+
+function issueRuleSuggestions(issues: DeliveryIssue[]) {
+  const suggestions = new Set<string>();
+  if (issues.some((item) => item.id.startsWith("REVIEW-SCOPE"))) {
+    suggestions.add("写代码 AI 每次只能修改当前 task 的 allowedFiles，越界必须回到系统 AI 重新拆任务。");
+  }
+  if (issues.some((item) => item.id.startsWith("REVIEW-"))) {
+    suggestions.add("review 失败要先生成并完成 fix task，再派发后续任务。");
+  }
+  if (issues.some((item) => item.id === "VALIDATION-COMMANDS")) {
+    suggestions.add("命令验收失败要沉淀失败命令、失败原因和修复任务，不要跳过 typecheck/lint/build。");
+  }
+  if (issues.some((item) => item.id === "KNOWLEDGE-WRITE")) {
+    suggestions.add("知识库写入失败不影响代码修复，但不能视为交付闭环完成。");
+  }
+  if (issues.some((item) => item.owner === "后端")) {
+    suggestions.add("接口能力缺失或字段不清晰时记录后端问题，不在前端猜参数。");
+  }
+  return Array.from(suggestions);
+}
+
+function deliveryNextAction({
+  taskPlan,
+  validationRun,
+  knowledgeWrite,
+  finalAcceptance,
+}: {
+  taskPlan: TaskPlanResult | null;
+  validationRun: ValidationRunResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+}) {
+  if (!taskPlan) return "先生成设计与任务队列。";
+  const currentTask = currentQueueTask(taskPlan);
+  if (currentTask?.fixOf && currentTask.status === "pending") return `优先复制修复任务 ${currentTask.id} prompt 给写代码 AI。`;
+  if (currentTask?.fixOf && currentTask.status === "assigned") return `等待写代码 AI 回填修复任务 ${currentTask.id} 完成报告。`;
+  if (currentTask?.status === "needs-fix") return `处理 ${currentTask.id} 的修复任务。`;
+  if (currentTask?.status === "assigned") return `等待写代码 AI 回填 ${currentTask.id} 完成报告并提交系统 review。`;
+  if (currentTask?.status === "pending") return `复制 ${currentTask.id} prompt 给写代码 AI。`;
+  if (taskPlan.tasks.some((item) => item.status === "blocked")) return "存在阻断任务，先看 review 和问题记录。";
+  if (!taskPlan.tasks.every((item) => item.status === "done")) return "继续派发下一个可执行任务。";
+  if (!validationRun) return "任务队列已完成，下一步执行命令验收。";
+  if (validationRun.status !== "success") return "命令验收未通过，先根据失败命令生成修复任务。";
+  if (knowledgeWrite?.status !== "success") return "命令验收已通过，下一步写入知识库。";
+  if (!finalAcceptance) return "知识沉淀已完成，下一步生成总验收。";
+  if (finalAcceptance.status === "success") return "交付闭环已完成，可以提交代码或进入下一个模块。";
+  return "总验收仍有风险，先处理验收发现。";
 }
 
 function createRunId() {
@@ -429,6 +624,119 @@ function ExecutionPackagePanel({ result }: { result: ExecutionPackageResult | nu
   );
 }
 
+function DeliveryControlPanel({
+  taskPlan,
+  reviewResult,
+  validationRun,
+  knowledgeWrite,
+  finalAcceptance,
+}: {
+  taskPlan: TaskPlanResult | null;
+  reviewResult: TaskReviewResult | null;
+  validationRun: ValidationRunResult | null;
+  knowledgeWrite: KnowledgeWriteResult | null;
+  finalAcceptance: FinalAcceptanceResult | null;
+}) {
+  const currentTask = currentQueueTask(taskPlan);
+  const doneTasks = taskPlan?.tasks.filter((item) => item.status === "done").length || 0;
+  const totalTasks = taskPlan?.tasks.length || 0;
+  const hasOutOfScopeFiles = Boolean(reviewResult?.outOfScopeFiles.length);
+  const cards: Array<{ title: string; status: StepStatus; meta: string; detail: string }> = [
+    {
+      title: "任务队列",
+      status: taskPlanPanelStatus(taskPlan),
+      meta: totalTasks ? `${doneTasks}/${totalTasks} 已完成` : "未生成",
+      detail: currentTask ? `${currentTask.id} ${currentTask.title}` : totalTasks ? "暂无待派发任务" : "等待生成 design 和任务队列",
+    },
+    {
+      title: "系统 review",
+      status: hasOutOfScopeFiles ? "risk" : reviewPanelStatus(reviewResult),
+      meta: reviewResult ? `结论：${reviewResult.decision}` : "未执行",
+      detail: hasOutOfScopeFiles ? `越界文件 ${reviewResult?.outOfScopeFiles.length} 个` : reviewResult?.summary || "等待写代码 AI 完成报告",
+    },
+    {
+      title: "命令验收",
+      status: validationPanelStatus(validationRun),
+      meta: validationRun ? validationRunStatusText[validationRun.status] : "未执行",
+      detail: validationRun?.summary || "等待执行 typecheck / lint / build",
+    },
+    {
+      title: "知识沉淀",
+      status: knowledgePanelStatus(knowledgeWrite),
+      meta: knowledgeWrite?.status === "success" ? "已写入" : knowledgeWrite ? "写入失败" : "未写入",
+      detail: knowledgeWrite?.summary || "等待写入项目实例和模块资料",
+    },
+    {
+      title: "总验收",
+      status: finalPanelStatus(finalAcceptance),
+      meta: finalAcceptance ? finalAcceptance.status : "未生成",
+      detail: finalAcceptance?.summary || "等待任务、命令验收和知识沉淀收口",
+    },
+  ];
+
+  return (
+    <section className="flat-panel delivery-control-panel">
+      <div className="scan-head">
+        <div>
+          <h2>交付总览</h2>
+          <p>系统 AI 用这个面板判断当前应该继续派任务、生成修复任务，还是进入命令验收和知识沉淀。</p>
+        </div>
+      </div>
+      <div className="delivery-next-action">
+        <span>下一步</span>
+        <strong>{deliveryNextAction({ taskPlan, validationRun, knowledgeWrite, finalAcceptance })}</strong>
+      </div>
+      <div className="delivery-control-grid">
+        {cards.map((card) => (
+          <article className={`delivery-control-card control-${card.status}`} key={card.title}>
+            <div>
+              <strong>{card.title}</strong>
+              <StatusBadge status={card.status} />
+            </div>
+            <span>{card.meta}</span>
+            <p>{card.detail}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function IssueTable({
+  issues,
+  taskPlan,
+  creatingIssueFixId,
+  onCreateIssueFix,
+}: {
+  issues: DeliveryIssue[];
+  taskPlan: TaskPlanResult | null;
+  creatingIssueFixId: string | null;
+  onCreateIssueFix: (issue: DeliveryIssue) => void;
+}) {
+  if (!issues.length) {
+    return <p className="empty-text">暂无问题。</p>;
+  }
+
+  return (
+    <div className="issue-table">
+      {issues.map((item) => (
+        <div className="issue-row" key={item.id}>
+          <strong>{item.level}</strong>
+          <span>{item.title}</span>
+          <small>{item.description}</small>
+          <button
+            className="issue-fix-button"
+            onClick={() => onCreateIssueFix(item)}
+            disabled={!taskPlan || creatingIssueFixId === item.id}
+          >
+            {creatingIssueFixId === item.id ? "生成中" : "生成修复任务"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TaskPlanPanel({
   result,
   dispatchedPrompt,
@@ -460,7 +768,10 @@ function TaskPlanPanel({
   }
 
   const currentTask = currentQueueTask(result);
+  const fixContext = currentFixContext(result);
   const finishedCount = result.tasks.filter((item) => item.status === "done").length;
+  const canDispatchCurrentTask = Boolean(currentTask && (currentTask.status === "pending" || currentTask.status === "assigned"));
+  const canReviewCurrentTask = Boolean(currentTask && currentTask.status === "assigned" && report.trim());
 
   return (
     <section className="flat-panel task-plan-panel">
@@ -484,10 +795,25 @@ function TaskPlanPanel({
           <strong>{currentTask ? `${currentTask.id} ${currentTask.title}` : "暂无可派发任务"}</strong>
           <small>{currentTask?.goal || "所有任务已完成，或当前存在阻断任务。"}</small>
         </div>
-        <button className="primary-button" onClick={onDispatch} disabled={!currentTask || dispatching}>
+        <button className="primary-button" onClick={onDispatch} disabled={!canDispatchCurrentTask || dispatching}>
           {dispatching ? "派发中" : "复制当前任务 prompt"}
         </button>
       </div>
+
+      {fixContext ? (
+        <div className="fix-task-callout">
+          <div>
+            <span>修复任务优先</span>
+            <strong>
+              {fixContext.fixTask.id} 修复 {fixContext.sourceTask?.id || fixContext.fixTask.fixOf}
+            </strong>
+            <small>
+              上一个任务 review 未通过，当前应先派发并完成这个修复任务。修复任务通过后，原任务会一起标记完成。
+            </small>
+          </div>
+          <code>{fixContext.fixTask.promptFile}</code>
+        </div>
+      ) : null}
 
       {dispatchedPrompt ? (
         <div className="task-prompt-preview">
@@ -502,7 +828,7 @@ function TaskPlanPanel({
       <div className="task-review-box">
         <FieldLabel title="写代码 AI 完成报告" hint="把当前任务完成后的报告粘贴在这里，再交给系统做轻量 review" />
         <TextArea value={report} onChange={onReportChange} rows={8} placeholder="任务编号：task-01&#10;实际改动文件：&#10;完成内容：&#10;运行命令和结果：&#10;未完成内容：无&#10;新增问题：无&#10;建议下一步：" />
-        <button className="secondary-button" onClick={onReview} disabled={!currentTask || !report.trim() || reviewing}>
+        <button className="secondary-button" onClick={onReview} disabled={!canReviewCurrentTask || reviewing}>
           {reviewing ? "检查中" : "提交系统 review"}
         </button>
       </div>
@@ -518,6 +844,24 @@ function TaskPlanPanel({
               <li key={item}>{item}</li>
             ))}
           </ul>
+          <div className="review-file-grid">
+            <article>
+              <strong>本任务新增/变更文件</strong>
+              {reviewResult.changedFiles.length ? (
+                reviewResult.changedFiles.map((filePath) => <code key={filePath}>{filePath}</code>)
+              ) : (
+                <span>未检测到新增改动</span>
+              )}
+            </article>
+            <article className={reviewResult.outOfScopeFiles.length ? "review-out-of-scope" : ""}>
+              <strong>越界文件</strong>
+              {reviewResult.outOfScopeFiles.length ? (
+                reviewResult.outOfScopeFiles.map((filePath) => <code key={filePath}>{filePath}</code>)
+              ) : (
+                <span>无</span>
+              )}
+            </article>
+          </div>
           <small>review 文件：{reviewResult.reviewFile || "未生成"}</small>
           {reviewResult.fixPromptFile ? <small>修复任务：{reviewResult.fixPromptFile}</small> : null}
         </div>
@@ -525,7 +869,7 @@ function TaskPlanPanel({
 
       <div className="task-plan-list">
         {result.tasks.map((item) => (
-          <article className={`task-plan-row task-status-${item.status}`} key={item.id}>
+          <article className={`task-plan-row task-status-${item.status} ${item.fixOf ? "task-plan-fix-row" : ""}`} key={item.id}>
             <div>
               <strong>
                 {item.id} {item.title}
@@ -946,6 +1290,7 @@ function App() {
   const [loadingTaskPlan, setLoadingTaskPlan] = useState(false);
   const [dispatchingTask, setDispatchingTask] = useState(false);
   const [reviewingTask, setReviewingTask] = useState(false);
+  const [creatingIssueFixId, setCreatingIssueFixId] = useState<string | null>(null);
   const [writingKnowledge, setWritingKnowledge] = useState(false);
   const [runningValidation, setRunningValidation] = useState(false);
   const [finalizingAcceptance, setFinalizingAcceptance] = useState(false);
@@ -955,7 +1300,13 @@ function App() {
   const runTimer = useRef<number | null>(null);
 
   const steps = useMemo(() => evaluateWorkflow(task, runtime, projectScan), [task, runtime, projectScan]);
-  const issues = useMemo(() => collectIssues(steps), [steps]);
+  const baseIssues = useMemo(() => collectIssues(steps), [steps]);
+  const runtimeIssues = useMemo(
+    () => deliveryRuntimeIssues({ reviewResult: taskReview, validationRun, knowledgeWrite, finalAcceptance }),
+    [taskReview, validationRun, knowledgeWrite, finalAcceptance],
+  );
+  const issues = useMemo(() => mergeDeliveryIssues(baseIssues, runtimeIssues), [baseIssues, runtimeIssues]);
+  const issueRules = useMemo(() => issueRuleSuggestions(issues), [issues]);
   const progress = useMemo(() => summarizeProgress(steps), [steps]);
   const markdown = useMemo(() => generateDeliveryMarkdown(task, steps, issues, projectScan), [task, steps, issues, projectScan]);
 
@@ -1010,8 +1361,17 @@ function App() {
     const recordTask = overrides.task || task;
     const recordRuntime = overrides.runtime || runtime;
     const recordProjectScan = overrides.projectScan === undefined ? projectScan : overrides.projectScan;
+    const recordValidationRun = overrides.validationRun === undefined ? validationRun : overrides.validationRun;
+    const recordKnowledgeWrite = overrides.knowledgeWrite === undefined ? knowledgeWrite : overrides.knowledgeWrite;
+    const recordFinalAcceptance = overrides.finalAcceptance === undefined ? finalAcceptance : overrides.finalAcceptance;
     const recordSteps = overrides.steps || evaluateWorkflow(recordTask, recordRuntime, recordProjectScan);
-    const recordIssues = overrides.issues || collectIssues(recordSteps);
+    const recordRuntimeIssues = deliveryRuntimeIssues({
+      reviewResult: taskReview,
+      validationRun: recordValidationRun,
+      knowledgeWrite: recordKnowledgeWrite,
+      finalAcceptance: recordFinalAcceptance,
+    });
+    const recordIssues = overrides.issues || mergeDeliveryIssues(collectIssues(recordSteps), recordRuntimeIssues);
     const recordProgress = overrides.progress ?? summarizeProgress(recordSteps);
     return {
       runId: currentRunId,
@@ -1019,12 +1379,12 @@ function App() {
       runtime: recordRuntime,
       logs,
       projectScan: recordProjectScan,
-      validationRun,
-      knowledgeWrite,
+      validationRun: recordValidationRun,
+      knowledgeWrite: recordKnowledgeWrite,
       contextPackage,
       executionPackage,
       taskPlan,
-      finalAcceptance,
+      finalAcceptance: recordFinalAcceptance,
       steps: recordSteps,
       issues: recordIssues,
       progress: recordProgress,
@@ -1509,16 +1869,42 @@ function App() {
         setTaskPlan(result.updatedTaskPlan);
         await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan });
       }
-      if (result.decision === "approved") {
-        setTaskReport("");
-        setTaskDispatch(null);
-      }
+      setTaskReport("");
+      setTaskDispatch(null);
       appendLog(result.summary, result.decision === "approved" ? "success" : result.decision === "blocked" ? "error" : "warning");
     } catch (error) {
       const message = error instanceof Error ? error.message : "任务 review 失败";
       appendLog(message, "error");
     } finally {
       setReviewingTask(false);
+    }
+  }
+
+  async function createFixTaskForIssue(issue: DeliveryIssue) {
+    if (!taskPlan) {
+      appendLog("请先生成设计与任务队列，再把问题转成修复任务。", "warning");
+      setTab("result");
+      return;
+    }
+
+    setCreatingIssueFixId(issue.id);
+    appendLog(`开始为问题生成修复任务：${issue.id}`, "info");
+
+    try {
+      const result = await requestIssueFixTask({ task, taskPlan, issue });
+      if (result.updatedTaskPlan) {
+        setTaskPlan(result.updatedTaskPlan);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan });
+      }
+      setTaskDispatch(null);
+      setTaskReport("");
+      appendLog(result.summary, "success");
+      setTab("result");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "问题修复任务生成失败";
+      appendLog(message, "error");
+    } finally {
+      setCreatingIssueFixId(null);
     }
   }
 
@@ -1622,6 +2008,7 @@ function App() {
       const result = await requestFinalAcceptance({
         task,
         taskPlan,
+        issues,
         validationRun,
         knowledgeWrite,
       });
@@ -1659,7 +2046,7 @@ function App() {
     }
   }
 
-  const criticalIssues = issues.filter((item) => item.level === "P0");
+  const blockingIssues = issues.filter((item) => item.level === "P0" && !item.canContinue);
   const continuableIssues = issues.filter((item) => item.level !== "P0" || item.canContinue);
 
   return (
@@ -1858,16 +2245,13 @@ function App() {
             <div className="issue-layout">
               <section className="flat-panel">
                 <h3>阻断问题</h3>
-                {criticalIssues.length ? (
-                  <div className="issue-table">
-                    {criticalIssues.map((item) => (
-                      <div className="issue-row" key={item.id}>
-                        <strong>{item.level}</strong>
-                        <span>{item.title}</span>
-                        <small>{item.description}</small>
-                      </div>
-                    ))}
-                  </div>
+                {blockingIssues.length ? (
+                  <IssueTable
+                    issues={blockingIssues}
+                    taskPlan={taskPlan}
+                    creatingIssueFixId={creatingIssueFixId}
+                    onCreateIssueFix={(issue) => void createFixTaskForIssue(issue)}
+                  />
                 ) : (
                   <p className="empty-text">暂无必须打断任务的问题。</p>
                 )}
@@ -1876,20 +2260,33 @@ function App() {
               <section className="flat-panel">
                 <h3>可继续执行的问题</h3>
                 {continuableIssues.length ? (
-                  <div className="issue-table">
-                    {continuableIssues.map((item) => (
-                      <div className="issue-row" key={item.id}>
-                        <strong>{item.level}</strong>
-                        <span>{item.title}</span>
-                        <small>{item.description}</small>
-                      </div>
-                    ))}
-                  </div>
+                  <IssueTable
+                    issues={continuableIssues}
+                    taskPlan={taskPlan}
+                    creatingIssueFixId={creatingIssueFixId}
+                    onCreateIssueFix={(issue) => void createFixTaskForIssue(issue)}
+                  />
                 ) : (
                   <p className="empty-text">暂无可继续执行的问题。</p>
                 )}
               </section>
             </div>
+
+            <section className="flat-panel">
+              <h3>规则沉淀建议</h3>
+              {issueRules.length ? (
+                <div className="rule-suggestion-list">
+                  {issueRules.map((item) => (
+                    <div className="rule-suggestion-row" key={item}>
+                      <strong>规则</strong>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty-text">暂无由运行问题推导出的新规则。</p>
+              )}
+            </section>
 
             <section className="flat-panel">
               <h3>运行日志</h3>
@@ -1943,6 +2340,13 @@ function App() {
                 </button>
               </div>
             </div>
+            <DeliveryControlPanel
+              taskPlan={taskPlan}
+              reviewResult={taskReview}
+              validationRun={validationRun}
+              knowledgeWrite={knowledgeWrite}
+              finalAcceptance={finalAcceptance}
+            />
             <ContextPackagePanel result={contextPackage} />
             <ExecutionPackagePanel result={executionPackage} />
             <TaskPlanPanel
