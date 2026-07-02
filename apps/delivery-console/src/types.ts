@@ -186,6 +186,36 @@ export type IssueFixTaskResult = {
   generatedAt: string;
 };
 
+export type AutoDryRunStep = {
+  id: string;
+  title: string;
+  taskId: string | null;
+  action: "dispatch" | "review" | "fix" | "validate" | "finalize" | "blocked" | "skip" | "wait";
+  status: "ready" | "planned" | "waiting" | "done" | "blocked";
+  checks: string[];
+  summary: string;
+};
+
+export type AutoDryRunResult = {
+  status: "success" | "warning" | "blocked" | "error";
+  mode: "dry-run";
+  planDirectory: string;
+  dryRunFile: string;
+  currentTaskId: string | null;
+  taskSummary: {
+    total: number;
+    done: number;
+    pending: number;
+    assigned: number;
+    needsFix: number;
+    blocked: number;
+  };
+  steps: AutoDryRunStep[];
+  warnings: string[];
+  summary: string;
+  generatedAt: string;
+};
+
 export type FinalAcceptanceResult = {
   status: "success" | "warning" | "blocked" | "error";
   knowledgeRoot: string;
@@ -238,6 +268,7 @@ export type DeliveryRunRecord = {
   contextPackage: ContextPackageResult | null;
   executionPackage: ExecutionPackageResult | null;
   taskPlan: TaskPlanResult | null;
+  autoDryRun: AutoDryRunResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
   steps: WorkflowStep[];
   issues: DeliveryIssue[];

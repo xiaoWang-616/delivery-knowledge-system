@@ -2726,6 +2726,194 @@ function taskCounts(tasks) {
   };
 }
 
+function dryRunActionForTask(taskItem, tasks, currentTaskId) {
+  const checks = [
+    "只派发单个 task prompt",
+    "检查写代码 AI 完成报告字段",
+    "检查派发后的 git diff 是否落在 allowedFiles",
+    "失败时生成 fix task，不跳过 review",
+  ];
+
+  if (taskItem.status === "done") {
+    return {
+      id: `dry-${taskItem.id}`,
+      title: `${taskItem.id} 已完成`,
+      taskId: taskItem.id,
+      action: "skip",
+      status: "done",
+      checks,
+      summary: `${taskItem.id} 已完成，自动执行器会跳过。`,
+    };
+  }
+
+  if (taskItem.status === "blocked") {
+    return {
+      id: `dry-${taskItem.id}`,
+      title: `${taskItem.id} 阻断`,
+      taskId: taskItem.id,
+      action: "blocked",
+      status: "blocked",
+      checks,
+      summary: `${taskItem.id} 已阻断，必须人工确认后才能继续。`,
+    };
+  }
+
+  if (taskItem.status === "needs-fix") {
+    const hasFixTask = tasks.some((item) => item.fixOf === taskItem.id && item.status !== "done");
+    return {
+      id: `dry-${taskItem.id}`,
+      title: `${taskItem.id} 等待修复`,
+      taskId: taskItem.id,
+      action: "fix",
+      status: hasFixTask ? "waiting" : "ready",
+      checks,
+      summary: hasFixTask ? `${taskItem.id} 已有未完成修复任务，自动执行器会优先派发修复任务。` : `${taskItem.id} 需要先生成 fix task。`,
+    };
+  }
+
+  if (taskItem.status === "assigned" || taskItem.status === "submitted" || taskItem.status === "reviewed") {
+    return {
+      id: `dry-${taskItem.id}`,
+      title: `${taskItem.id} 等待 review`,
+      taskId: taskItem.id,
+      action: "review",
+      status: "ready",
+      checks,
+      summary: `${taskItem.id} 已派发，下一步应收集写代码 AI 报告并执行系统 review。`,
+    };
+  }
+
+  if (taskItem.id === currentTaskId) {
+    return {
+      id: `dry-${taskItem.id}`,
+      title: `${taskItem.id} 可派发`,
+      taskId: taskItem.id,
+      action: "dispatch",
+      status: "ready",
+      checks,
+      summary: `${taskItem.id} 是当前可执行任务，自动执行器会锁定它并生成单任务输入。`,
+    };
+  }
+
+  const waitingFor = taskItem.dependsOn.filter((taskId) => !isTaskDone(tasks, taskId));
+  return {
+    id: `dry-${taskItem.id}`,
+    title: `${taskItem.id} 等待依赖`,
+    taskId: taskItem.id,
+    action: "wait",
+    status: "waiting",
+    checks,
+    summary: waitingFor.length ? `${taskItem.id} 等待依赖完成：${waitingFor.join("、")}。` : `${taskItem.id} 等待前序任务推进。`,
+  };
+}
+
+function createAutoDryRunMarkdown(result) {
+  const rows = result.steps
+    .map((step) => `| ${tableCell(step.id)} | ${tableCell(step.action)} | ${tableCell(step.status)} | ${tableCell(step.summary)} |`)
+    .join("\n");
+  const warnings = result.warnings.length ? result.warnings.map((item) => `- ${item}`).join("\n") : "- 暂无。";
+
+  return `# 自动执行器干跑计划
+
+> 本文件只描述自动执行器将如何推进任务，不调用 AI，不写真实项目。
+
+## 结论
+
+- 状态：${result.status}
+- 当前任务：${result.currentTaskId || "无"}
+- 任务进度：${result.taskSummary.done}/${result.taskSummary.total}
+
+${result.summary}
+
+## 风险提示
+
+${warnings}
+
+## 执行步骤
+
+| 步骤 | 动作 | 状态 | 说明 |
+| --- | --- | --- | --- |
+${rows}
+
+## 固定检查
+
+- 每次只处理一个 task。
+- 写代码 AI 必须按单任务协议输出报告。
+- 系统 AI 必须检查 git diff 和 allowedFiles。
+- review 不通过必须生成 fix task。
+- 达到修复上限后必须进入人工确认。
+`;
+}
+
+function prepareAutoDryRun(payload) {
+  const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
+  const counts = taskCounts(tasks);
+  const currentTask = nextDispatchableTask(tasks);
+  const warnings = [];
+
+  if (counts.blocked) {
+    warnings.push(`存在 ${counts.blocked} 个阻断任务，自动执行器不会继续推进。`);
+  }
+  if (counts.needsFix) {
+    warnings.push(`存在 ${counts.needsFix} 个需修复任务，必须先进入 fix task。`);
+  }
+  if (counts.assigned) {
+    warnings.push(`存在 ${counts.assigned} 个已派发/待 review 任务，下一步应先收集报告并 review。`);
+  }
+  if (!currentTask && counts.done < counts.total && !counts.blocked) {
+    warnings.push("当前没有可派发任务，可能是依赖状态未满足。");
+  }
+
+  const taskSteps = tasks.map((item) => dryRunActionForTask(item, tasks, currentTask?.id || null));
+  const allDone = counts.total > 0 && counts.done === counts.total;
+  const steps = [
+    ...taskSteps,
+    {
+      id: "dry-validation",
+      title: "命令验收",
+      taskId: null,
+      action: "validate",
+      status: allDone ? "ready" : "waiting",
+      checks: ["只运行 package.json 已声明的 typecheck/lint/build", "保存命令结果", "失败进入问题池"],
+      summary: allDone ? "全部任务完成后可以执行命令验收。" : "等待任务队列全部完成后再执行命令验收。",
+    },
+    {
+      id: "dry-finalize",
+      title: "总验收和知识沉淀",
+      taskId: null,
+      action: "finalize",
+      status: allDone ? "planned" : "waiting",
+      checks: ["生成 final-acceptance.auto.md", "检查问题池", "生成规则沉淀建议"],
+      summary: allDone ? "命令验收和知识写入完成后生成总验收。" : "等待任务、命令验收和知识沉淀完成。",
+    },
+  ];
+
+  const status = counts.blocked ? "blocked" : warnings.length ? "warning" : "success";
+  const dryRunFile = join(planDirectory, "auto-dry-run.auto.md");
+  const result = {
+    status,
+    mode: "dry-run",
+    planDirectory,
+    dryRunFile,
+    currentTaskId: currentTask?.id || null,
+    taskSummary: counts,
+    steps,
+    warnings,
+    summary:
+      status === "blocked"
+        ? "自动执行器干跑发现阻断任务，需要人工确认。"
+        : currentTask
+          ? `自动执行器干跑完成，下一步应处理 ${currentTask.id}。`
+          : allDone
+            ? "自动执行器干跑完成，任务队列已完成，可以进入验收。"
+            : "自动执行器干跑完成，但当前没有可派发任务。",
+    generatedAt: new Date().toISOString(),
+  };
+
+  writeFileSync(dryRunFile, `${createAutoDryRunMarkdown(result).trim()}\n`, "utf8");
+  return result;
+}
+
 function reviewFiles(planDirectory) {
   const reviewsDirectory = join(planDirectory, "reviews");
   if (!existsSync(reviewsDirectory) || !statSync(reviewsDirectory).isDirectory()) {
@@ -3216,6 +3404,36 @@ const server = createServer(async (request, response) => {
         promptFile: "",
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "问题修复任务生成失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/prepare-auto-dry-run") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = prepareAutoDryRun(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        mode: "dry-run",
+        planDirectory: "",
+        dryRunFile: "",
+        currentTaskId: null,
+        taskSummary: {
+          total: 0,
+          done: 0,
+          pending: 0,
+          assigned: 0,
+          needsFix: 0,
+          blocked: 0,
+        },
+        steps: [],
+        warnings: [error instanceof Error ? error.message : "自动执行器干跑失败"],
+        summary: error instanceof Error ? error.message : "自动执行器干跑失败",
         generatedAt: new Date().toISOString(),
       });
     }

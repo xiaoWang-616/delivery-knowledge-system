@@ -1,4 +1,5 @@
 import type {
+  AutoDryRunResult,
   ContextPackageResult,
   DeliveryIssue,
   DeliveryRunRecord,
@@ -227,6 +228,21 @@ export async function createIssueFixTask(payload: {
   });
 
   return readJson<IssueFixTaskResult>(response);
+}
+
+export async function prepareAutoDryRun(payload: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult;
+}): Promise<AutoDryRunResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/prepare-auto-dry-run`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AutoDryRunResult>(response);
 }
 
 export async function reviewTaskResult(payload: {

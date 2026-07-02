@@ -184,7 +184,7 @@ export function evaluateWorkflow(task: DeliveryTask, runtime: RuntimeState, proj
     description: "根据执行计划进入真实项目新增或修改代码。",
     dependsOn: ["delivery-plan"],
     status: mergeRuntime(codeStatus, runtime["code-development"]),
-    output: task.permissions.allowWriteCode ? "已授权写代码；V2/V3 由 runner 和 AI 执行。" : "等待写代码授权。",
+    output: task.permissions.allowWriteCode ? "已授权写代码；第三阶段由 runner 和 AI 受控执行。" : "等待写代码授权。",
     issues: codeIssues,
   });
 

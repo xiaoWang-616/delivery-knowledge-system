@@ -9,6 +9,7 @@ import {
   listRunRecords as requestRunRecordList,
   loadRunRecord as requestRunRecordLoad,
   prepareContextPackage as requestContextPackagePrepare,
+  prepareAutoDryRun as requestAutoDryRunPrepare,
   prepareExecutionPackage as requestExecutionPackagePrepare,
   prepareTaskPlan as requestTaskPlanPrepare,
   reviewTaskResult as requestTaskReview,
@@ -32,6 +33,7 @@ import {
   saveTask,
 } from "./storage";
 import type {
+  AutoDryRunResult,
   ContextPackageResult,
   DeliveryIssue,
   DeliveryRunRecord,
@@ -60,7 +62,7 @@ type TabKey = "task" | "plan" | "issues" | "result";
 const permissionLabels: Record<PermissionKey, { title: string; description: string }> = {
   allowWriteCode: {
     title: "允许自动写代码",
-    description: "V2/V3 中允许执行器进入真实项目新增或修改文件。",
+    description: "第三阶段中允许执行器进入真实项目新增或修改文件。",
   },
   allowRunCommands: {
     title: "允许自动运行命令",
@@ -739,21 +741,27 @@ function IssueTable({
 
 function TaskPlanPanel({
   result,
+  autoDryRun,
   dispatchedPrompt,
   report,
   reviewResult,
   dispatching,
   reviewing,
+  preparingAutoDryRun,
+  onPrepareAutoDryRun,
   onDispatch,
   onReportChange,
   onReview,
 }: {
   result: TaskPlanResult | null;
+  autoDryRun: AutoDryRunResult | null;
   dispatchedPrompt: TaskDispatchResult | null;
   report: string;
   reviewResult: TaskReviewResult | null;
   dispatching: boolean;
   reviewing: boolean;
+  preparingAutoDryRun: boolean;
+  onPrepareAutoDryRun: () => void;
   onDispatch: () => void;
   onReportChange: (value: string) => void;
   onReview: () => void;
@@ -780,7 +788,12 @@ function TaskPlanPanel({
           <h2>设计与任务队列</h2>
           <p>{result.summary}</p>
         </div>
-        <StatusBadge status={result.status === "success" ? "done" : "failed"} />
+        <div className="panel-actions">
+          <button className="secondary-button" onClick={onPrepareAutoDryRun} disabled={preparingAutoDryRun}>
+            {preparingAutoDryRun ? "生成中" : "生成自动执行干跑"}
+          </button>
+          <StatusBadge status={result.status === "success" ? "done" : "failed"} />
+        </div>
       </div>
       <div className="execution-meta">
         <span>目录：{result.planDirectory || "未生成"}</span>
@@ -812,6 +825,42 @@ function TaskPlanPanel({
             </small>
           </div>
           <code>{fixContext.fixTask.promptFile}</code>
+        </div>
+      ) : null}
+
+      {autoDryRun ? (
+        <div className={`auto-dry-run-panel auto-dry-run-${autoDryRun.status}`}>
+          <div>
+            <strong>{autoDryRun.summary}</strong>
+            <span>模式：{autoDryRun.mode} · 当前任务：{autoDryRun.currentTaskId || "无"}</span>
+          </div>
+          <div className="execution-meta">
+            <span>任务：{autoDryRun.taskSummary.done}/{autoDryRun.taskSummary.total}</span>
+            <span>待派发：{autoDryRun.taskSummary.pending}</span>
+            <span>待 review：{autoDryRun.taskSummary.assigned}</span>
+            <span>需修复：{autoDryRun.taskSummary.needsFix}</span>
+            <span>阻断：{autoDryRun.taskSummary.blocked}</span>
+          </div>
+          {autoDryRun.warnings.length ? (
+            <ul>
+              {autoDryRun.warnings.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="auto-dry-run-list">
+            {autoDryRun.steps.map((step) => (
+              <article className={`auto-dry-run-step dry-step-${step.status}`} key={step.id}>
+                <div>
+                  <strong>{step.title}</strong>
+                  <span>{step.action} / {step.status}</span>
+                </div>
+                <p>{step.summary}</p>
+                <small>{step.checks.join(" · ")}</small>
+              </article>
+            ))}
+          </div>
+          <small>干跑文件：{autoDryRun.dryRunFile}</small>
         </div>
       ) : null}
 
@@ -1271,6 +1320,7 @@ function App() {
   const [contextPackage, setContextPackage] = useState<ContextPackageResult | null>(null);
   const [executionPackage, setExecutionPackage] = useState<ExecutionPackageResult | null>(null);
   const [taskPlan, setTaskPlan] = useState<TaskPlanResult | null>(null);
+  const [autoDryRun, setAutoDryRun] = useState<AutoDryRunResult | null>(null);
   const [taskDispatch, setTaskDispatch] = useState<TaskDispatchResult | null>(null);
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
@@ -1287,6 +1337,7 @@ function App() {
   const [preparingContext, setPreparingContext] = useState(false);
   const [preparingExecution, setPreparingExecution] = useState(false);
   const [preparingTaskPlan, setPreparingTaskPlan] = useState(false);
+  const [preparingAutoDryRun, setPreparingAutoDryRun] = useState(false);
   const [loadingTaskPlan, setLoadingTaskPlan] = useState(false);
   const [dispatchingTask, setDispatchingTask] = useState(false);
   const [reviewingTask, setReviewingTask] = useState(false);
@@ -1364,6 +1415,7 @@ function App() {
     const recordValidationRun = overrides.validationRun === undefined ? validationRun : overrides.validationRun;
     const recordKnowledgeWrite = overrides.knowledgeWrite === undefined ? knowledgeWrite : overrides.knowledgeWrite;
     const recordFinalAcceptance = overrides.finalAcceptance === undefined ? finalAcceptance : overrides.finalAcceptance;
+    const recordAutoDryRun = overrides.autoDryRun === undefined ? autoDryRun : overrides.autoDryRun;
     const recordSteps = overrides.steps || evaluateWorkflow(recordTask, recordRuntime, recordProjectScan);
     const recordRuntimeIssues = deliveryRuntimeIssues({
       reviewResult: taskReview,
@@ -1384,6 +1436,7 @@ function App() {
       contextPackage,
       executionPackage,
       taskPlan,
+      autoDryRun: recordAutoDryRun,
       finalAcceptance: recordFinalAcceptance,
       steps: recordSteps,
       issues: recordIssues,
@@ -1428,6 +1481,7 @@ function App() {
     setContextPackage(record.contextPackage || null);
     setExecutionPackage(record.executionPackage || null);
     setTaskPlan(record.taskPlan || null);
+    setAutoDryRun(record.autoDryRun || null);
     setFinalAcceptance(record.finalAcceptance || null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1487,13 +1541,14 @@ function App() {
     clearStorage();
     setTask(defaultTask);
     setRuntime({});
-    setLogs([createLog("已重置 V1 原型数据。", "warning")]);
+    setLogs([createLog("已重置控制台本地数据。", "warning")]);
     setSystemHealth(null);
     setProjectScan(null);
     setKnowledgeWrite(null);
     setContextPackage(null);
     setExecutionPackage(null);
     setTaskPlan(null);
+    setAutoDryRun(null);
     setFinalAcceptance(null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1604,7 +1659,7 @@ function App() {
 
     setTab("plan");
     setRuntime({});
-    appendLog("启动自动交付演练。V1 只演示状态推进，不会写真实项目。", "info");
+    appendLog("启动自动交付演练。当前只演示状态推进，不会写真实项目。", "info");
 
     const runNext = (currentRuntime: RuntimeState) => {
       const nextSteps = evaluateWorkflow(task, currentRuntime, projectScan);
@@ -1752,11 +1807,12 @@ function App() {
         validationRun,
       });
       setTaskPlan(result);
+      setAutoDryRun(null);
       setTaskDispatch(null);
       setTaskReview(null);
       setTaskReport("");
       appendLog(result.summary, "success");
-      await saveCurrentRunRecord(true, { taskPlan: result });
+      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "设计与任务队列生成失败";
       const failedTaskPlan: TaskPlanResult = {
@@ -1771,8 +1827,9 @@ function App() {
         generatedAt: new Date().toISOString(),
       };
       setTaskPlan(failedTaskPlan);
+      setAutoDryRun(null);
       appendLog(message, "error");
-      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan });
+      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan, autoDryRun: null });
     } finally {
       setPreparingTaskPlan(false);
     }
@@ -1791,16 +1848,60 @@ function App() {
     try {
       const result = await requestTaskPlanLoad({ task, projectScan, taskPlan });
       setTaskPlan(result);
+      setAutoDryRun(null);
       setTaskDispatch(null);
       setTaskReview(null);
       setTaskReport("");
       appendLog(result.summary, "success");
-      await saveCurrentRunRecord(true, { taskPlan: result });
+      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "任务队列恢复失败";
       appendLog(message, "error");
     } finally {
       setLoadingTaskPlan(false);
+    }
+  }
+
+  async function prepareCurrentAutoDryRun() {
+    if (!taskPlan) {
+      appendLog("请先生成或恢复设计与任务队列，再生成自动执行干跑计划。", "warning");
+      return;
+    }
+
+    setPreparingAutoDryRun(true);
+    appendLog("开始生成自动执行器干跑计划。", "info");
+
+    try {
+      const result = await requestAutoDryRunPrepare({ task, taskPlan });
+      setAutoDryRun(result);
+      appendLog(result.summary, result.status === "success" ? "success" : result.status === "blocked" ? "error" : "warning");
+      await saveCurrentRunRecord(true, { autoDryRun: result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "自动执行器干跑失败";
+      const failedDryRun: AutoDryRunResult = {
+        status: "error",
+        mode: "dry-run",
+        planDirectory: "",
+        dryRunFile: "",
+        currentTaskId: null,
+        taskSummary: {
+          total: 0,
+          done: 0,
+          pending: 0,
+          assigned: 0,
+          needsFix: 0,
+          blocked: 0,
+        },
+        steps: [],
+        warnings: [message],
+        summary: message,
+        generatedAt: new Date().toISOString(),
+      };
+      setAutoDryRun(failedDryRun);
+      appendLog(message, "error");
+      await saveCurrentRunRecord(true, { autoDryRun: failedDryRun });
+    } finally {
+      setPreparingAutoDryRun(false);
     }
   }
 
@@ -1824,7 +1925,8 @@ function App() {
       setTaskDispatch(result);
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan });
+        setAutoDryRun(null);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
       }
       await navigator.clipboard.writeText(result.promptContent);
       appendLog(`${result.summary} 已复制到剪贴板。`, "success");
@@ -1867,7 +1969,8 @@ function App() {
       setTaskReview(result);
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan });
+        setAutoDryRun(null);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
       }
       setTaskReport("");
       setTaskDispatch(null);
@@ -1894,7 +1997,8 @@ function App() {
       const result = await requestIssueFixTask({ task, taskPlan, issue });
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
-        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan });
+        setAutoDryRun(null);
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null });
       }
       setTaskDispatch(null);
       setTaskReport("");
@@ -2136,7 +2240,7 @@ function App() {
             <div className="section-head">
               <div>
                 <h2>一次性任务包</h2>
-                <p>把项目路径、模块需求、接口资料、样式资料和授权一次性给齐。V1 会生成计划和 Markdown，V2/V3 才真正写项目。</p>
+                <p>把项目路径、模块需求、接口资料、样式资料和授权一次性给齐。当前阶段生成计划和 Markdown，第三阶段再受控写真实项目。</p>
               </div>
             </div>
 
@@ -2148,7 +2252,7 @@ function App() {
                 <TextInput value={task.projectName} onChange={(value) => updateTask("projectName", value)} placeholder="例如 gil-business-web" />
               </div>
               <div className="field">
-                <FieldLabel title="真实项目路径" hint="V2/V3 中 runner 会进入这个目录" />
+                <FieldLabel title="真实项目路径" hint="第三阶段中 runner 会进入这个目录" />
                 <TextInput
                   value={task.projectPath}
                   onChange={(value) => updateTask("projectPath", value)}
@@ -2311,7 +2415,7 @@ function App() {
             <div className="section-head">
               <div>
                 <h2>交付结果和 Markdown</h2>
-                <p>V1 先生成可复制的 Markdown。V2 会把这些内容自动写回 Obsidian 知识库和项目实例目录。</p>
+                <p>当前阶段生成可复制的 Markdown，并可把内容写回 Obsidian 知识库和项目实例目录。</p>
               </div>
               <div className="top-actions">
                 <button className="secondary-button" onClick={prepareCurrentContextPackage} disabled={preparingContext}>
@@ -2351,11 +2455,14 @@ function App() {
             <ExecutionPackagePanel result={executionPackage} />
             <TaskPlanPanel
               result={taskPlan}
+              autoDryRun={autoDryRun}
               dispatchedPrompt={taskDispatch}
               report={taskReport}
               reviewResult={taskReview}
               dispatching={dispatchingTask}
               reviewing={reviewingTask}
+              preparingAutoDryRun={preparingAutoDryRun}
+              onPrepareAutoDryRun={() => void prepareCurrentAutoDryRun()}
               onDispatch={() => void dispatchCurrentTask()}
               onReportChange={setTaskReport}
               onReview={() => void reviewCurrentTaskReport()}
