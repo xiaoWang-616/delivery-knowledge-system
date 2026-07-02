@@ -15,6 +15,8 @@ export const defaultTask: DeliveryTask = {
   demos: "",
   oldProjects: "",
   prds: "",
+  pageUrl: "",
+  smokeKeywords: "",
   permissions: {
     allowWriteCode: true,
     allowRunCommands: true,
@@ -33,7 +35,15 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 export function loadTask(): DeliveryTask {
-  return readJson(taskKey, defaultTask);
+  const saved = readJson<Partial<DeliveryTask>>(taskKey, {});
+  return {
+    ...defaultTask,
+    ...saved,
+    permissions: {
+      ...defaultTask.permissions,
+      ...(saved.permissions || {}),
+    },
+  };
 }
 
 export function saveTask(task: DeliveryTask) {

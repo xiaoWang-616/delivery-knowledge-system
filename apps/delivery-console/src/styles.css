@@ -478,6 +478,10 @@ h3 {
   margin-bottom: 18px;
 }
 
+.page-smoke-panel {
+  margin-bottom: 18px;
+}
+
 .scan-head {
   display: flex;
   align-items: flex-start;
@@ -986,6 +990,60 @@ h3 {
   background: #fff;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.page-smoke-summary {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.page-smoke-summary code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.smoke-check-passed {
+  border-left-color: var(--green);
+}
+
+.smoke-check-warning {
+  border-left-color: var(--amber);
+}
+
+.smoke-check-failed {
+  border-left-color: var(--red);
+}
+
+.smoke-warning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.smoke-warning-grid article {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #f7dca6;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.smoke-warning-grid strong {
+  color: #8a5600;
+}
+
+.smoke-warning-grid span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .task-review-box {

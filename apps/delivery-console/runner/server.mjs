@@ -2497,6 +2497,235 @@ async function runControlledSingleTask(payload) {
   }
 }
 
+function smokeDirectoriesForPayload(payload) {
+  const task = payload.task || {};
+  const projectScan = payload.projectScan || null;
+  const taskPlan = payload.taskPlan || null;
+  if (taskPlan?.moduleDirectory) {
+    return {
+      projectDirectory: taskPlan.projectDirectory || dirname(taskPlan.moduleDirectory),
+      moduleDirectory: taskPlan.moduleDirectory,
+    };
+  }
+
+  const projectName = safeName(projectScan?.projectName || task.projectName || basename(task.projectPath || "项目实例"), "项目实例");
+  const moduleName = safeName(task.moduleName, "未命名模块");
+  const projectDirectory = join(knowledgeRoot, "08-项目实例", projectName);
+  return {
+    projectDirectory,
+    moduleDirectory: join(projectDirectory, moduleName),
+  };
+}
+
+function visibleHtmlText(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractHtmlTitle(html) {
+  const match = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? visibleHtmlText(match[1]).slice(0, 160) : "";
+}
+
+function createPageSmokeMarkdown(result) {
+  return `# 轻量页面点测
+
+> 本文件是本地 runner 对页面 URL 的轻量 smoke test。它只检查可访问性、标题、关键词和明显错误文本，不替代 Playwright、截图对比或人工验收。
+
+## 结论
+
+- 状态：${result.status}
+- URL：${result.url || "未提供"}
+- HTTP：${result.httpStatus ?? "-"}
+- 标题：${result.title || "未识别"}
+- HTML 长度：${result.bodyLength}
+- 时间：${result.generatedAt}
+
+${result.summary}
+
+## 检查项
+
+| 检查项 | 状态 | 说明 |
+| --- | --- | --- |
+${result.checks.map((item) => `| ${tableCell(item.name)} | ${tableCell(item.status)} | ${tableCell(item.message)} |`).join("\n")}
+
+## 关键词
+
+### 已检查关键词
+
+${formatList(result.checkedKeywords, "未提供")}
+
+### 缺失关键词
+
+${formatList(result.missingKeywords, "无")}
+
+## 明显错误文本
+
+${formatList(result.detectedErrors, "未发现")}
+`;
+}
+
+async function runPageSmokeTest(payload) {
+  const task = payload.task || {};
+  const rawUrl = String(task.pageUrl || "").trim();
+  const generatedAt = new Date().toISOString();
+  const { projectDirectory, moduleDirectory } = smokeDirectoriesForPayload(payload);
+  const smokeFile = join(moduleDirectory, `页面点测-${timestampForFile()}.auto.md`);
+  const checkedKeywords = formatTaskLines(task.smokeKeywords);
+  const commonErrorTexts = [
+    "Cannot read properties",
+    "ReferenceError",
+    "TypeError",
+    "Unhandled Runtime Error",
+    "Internal Server Error",
+    "Application error",
+    "Not Found",
+    "页面不存在",
+    "服务异常",
+  ];
+
+  const baseResult = {
+    status: "skipped",
+    url: rawUrl,
+    httpStatus: null,
+    title: "",
+    bodyLength: 0,
+    checkedKeywords,
+    missingKeywords: [],
+    detectedErrors: [],
+    checks: [],
+    knowledgeRoot,
+    projectDirectory,
+    moduleDirectory,
+    smokeFile,
+    summary: "",
+    generatedAt,
+  };
+
+  if (!rawUrl) {
+    const result = {
+      ...baseResult,
+      status: "skipped",
+      checks: [{ name: "URL", status: "warning", message: "未填写页面点测 URL，已跳过。" }],
+      summary: "未填写页面点测 URL，已跳过轻量页面点测。",
+    };
+    mkdirSync(moduleDirectory, { recursive: true });
+    writeFileSync(smokeFile, `${createPageSmokeMarkdown(result).trim()}\n`, "utf8");
+    return result;
+  }
+
+  if (!/^https?:\/\//i.test(rawUrl)) {
+    const result = {
+      ...baseResult,
+      status: "error",
+      checks: [{ name: "URL", status: "failed", message: "页面点测 URL 必须以 http:// 或 https:// 开头。" }],
+      summary: "页面点测 URL 格式不正确。",
+    };
+    mkdirSync(moduleDirectory, { recursive: true });
+    writeFileSync(smokeFile, `${createPageSmokeMarkdown(result).trim()}\n`, "utf8");
+    return result;
+  }
+
+  const checks = [{ name: "URL", status: "passed", message: "URL 格式正确。" }];
+  let httpStatus = null;
+  let title = "";
+  let bodyLength = 0;
+  let missingKeywords = [];
+  let detectedErrors = [];
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    let response;
+    try {
+      response = await fetch(rawUrl, {
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    httpStatus = response.status;
+    const html = await response.text();
+    title = extractHtmlTitle(html);
+    bodyLength = html.length;
+    const visibleText = visibleHtmlText(html);
+
+    checks.push({
+      name: "HTTP",
+      status: response.ok ? "passed" : "failed",
+      message: `${response.status} ${response.statusText || ""}`.trim(),
+    });
+    checks.push({
+      name: "页面内容",
+      status: bodyLength > 0 ? "passed" : "failed",
+      message: bodyLength > 0 ? `HTML 长度 ${bodyLength}` : "页面响应为空。",
+    });
+    checks.push({
+      name: "标题",
+      status: title ? "passed" : "warning",
+      message: title || "未识别到 title。",
+    });
+
+    missingKeywords = checkedKeywords.filter((keyword) => !visibleText.includes(keyword));
+    if (checkedKeywords.length) {
+      checks.push({
+        name: "关键词",
+        status: missingKeywords.length ? "failed" : "passed",
+        message: missingKeywords.length ? `缺失：${missingKeywords.join("、")}` : `已命中 ${checkedKeywords.length} 个关键词。`,
+      });
+    } else {
+      checks.push({
+        name: "关键词",
+        status: "warning",
+        message: "未填写点测关键词，只检查页面是否可访问。",
+      });
+    }
+
+    detectedErrors = commonErrorTexts.filter((item) => visibleText.includes(item) || title.includes(item));
+    checks.push({
+      name: "明显错误文本",
+      status: detectedErrors.length ? "failed" : "passed",
+      message: detectedErrors.length ? `发现：${detectedErrors.join("、")}` : "未发现常见错误文本。",
+    });
+  } catch (error) {
+    checks.push({
+      name: "请求页面",
+      status: "failed",
+      message: error instanceof Error ? error.message : "页面请求失败。",
+    });
+  }
+
+  const hasFailed = checks.some((item) => item.status === "failed");
+  const hasWarning = checks.some((item) => item.status === "warning");
+  const status = hasFailed ? "failed" : hasWarning ? "warning" : "success";
+  const result = {
+    ...baseResult,
+    status,
+    httpStatus,
+    title,
+    bodyLength,
+    missingKeywords,
+    detectedErrors,
+    checks,
+    summary:
+      status === "success"
+        ? "轻量页面点测通过。"
+        : status === "warning"
+          ? "轻量页面点测完成但有提醒，请补齐关键词或检查标题。"
+          : "轻量页面点测未通过，请查看缺失关键词、HTTP 状态或错误文本。",
+  };
+
+  mkdirSync(moduleDirectory, { recursive: true });
+  writeFileSync(smokeFile, `${createPageSmokeMarkdown(result).trim()}\n`, "utf8");
+  return result;
+}
+
 function reportField(report, label) {
   const labels = ["任务编号", "实际改动文件", "完成内容", "运行命令和结果", "未完成内容", "新增问题", "建议下一步"];
   const nextLabels = labels.filter((item) => item !== label).join("|");
@@ -3214,6 +3443,7 @@ function createFinalAcceptanceContent(payload, tasks, reviews, counts, status, f
   const task = payload.task || {};
   const validationRun = payload.validationRun || null;
   const knowledgeWrite = payload.knowledgeWrite || null;
+  const pageSmoke = payload.pageSmoke || null;
   const issues = Array.isArray(payload.issues) ? payload.issues : [];
   const taskRows = tasks.length
     ? tasks
@@ -3261,6 +3491,13 @@ ${issueRows}
 - 状态：${validationRun?.status || "未执行"}
 - 摘要：${validationRun?.summary || "未执行命令验收"}
 
+## 页面点测
+
+- 状态：${pageSmoke?.status || "未执行"}
+- URL：${pageSmoke?.url || "未提供"}
+- 摘要：${pageSmoke?.summary || "未执行页面点测"}
+- 报告：${pageSmoke?.smokeFile || "无"}
+
 ## 知识库写入
 
 - 状态：${knowledgeWrite?.status || "未写入"}
@@ -3279,6 +3516,66 @@ ${formatList(rules)}
 - 如果状态为 \`success\`：可以进入人工最终验收或提交代码。
 - 如果状态为 \`warning\`：优先处理 pending / assigned / needs-fix 任务。
 - 如果状态为 \`blocked\`：先处理 blocked 任务或接口、权限、需求等阻断问题。
+`;
+}
+
+function createRuleSuggestionContent(payload, tasks, findings, rules) {
+  const task = payload.task || {};
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  const validationRun = payload.validationRun || null;
+  const pageSmoke = payload.pageSmoke || null;
+  const issueRows = issues.length
+    ? issues
+        .map(
+          (issue) =>
+            `| ${tableCell(issue.id)} | ${tableCell(issue.level)} | ${tableCell(issue.owner)} | ${issue.canContinue ? "可继续" : "阻断"} | ${tableCell(issue.title)} | ${tableCell(issue.description)} |`,
+        )
+        .join("\n")
+    : "| 无 | 无 | 无 | 可继续 | 暂无问题 | - |";
+  const taskRows = tasks.length
+    ? tasks.map((item) => `| ${tableCell(item.id)} | ${tableCell(item.title)} | ${tableCell(item.status)} | ${tableCell(item.goal)} |`).join("\n")
+    : "| 无 | 无任务 | - | - |";
+
+  return `# ${task.moduleName || "未命名模块"} 规则沉淀候选（自动生成）
+
+> 本文件只生成候选规则，不自动写入通用规则库。人工确认后，再把稳定规则移动到 \`11-规则库\` 或项目特有规则文件。
+
+## 模块信息
+
+- 项目：${task.projectName || "未填写"}
+- 模块：${task.moduleName || "未填写"}
+- 生成时间：${new Date().toLocaleString("zh-CN", { hour12: false })}
+
+## 候选规则
+
+${formatList(rules)}
+
+## 证据：验收发现
+
+${formatList(findings)}
+
+## 证据：运行问题池
+
+| 编号 | 等级 | 责任方 | 是否阻断 | 问题 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+${issueRows}
+
+## 证据：任务队列
+
+| 任务 | 标题 | 状态 | 目标 |
+| --- | --- | --- | --- |
+${taskRows}
+
+## 证据：命令和页面点测
+
+- 命令验收：${validationRun?.status || "未执行"}，${validationRun?.summary || "无摘要"}
+- 页面点测：${pageSmoke?.status || "未执行"}，${pageSmoke?.summary || "无摘要"}
+
+## 人工处理建议
+
+- 能复用于所有项目的规则，人工复制到 \`11-规则库\`。
+- 只适用于当前项目的规则，放入项目实例目录。
+- 仍然不确定的规则，保留在本文件，不要进入通用规则库。
 `;
 }
 
@@ -3304,9 +3601,18 @@ function finalizeDelivery(payload) {
   }
   if (!payload.validationRun) {
     findings.push("尚未执行命令验收。");
+  } else if (payload.validationRun.status !== "success") {
+    findings.push(`命令验收状态为 ${payload.validationRun.status}，需要确认是否可交付。`);
+  }
+  if (!payload.pageSmoke) {
+    findings.push("尚未执行轻量页面点测。");
+  } else if (payload.pageSmoke.status !== "success" && payload.pageSmoke.status !== "skipped") {
+    findings.push(`轻量页面点测状态为 ${payload.pageSmoke.status}：${payload.pageSmoke.summary}`);
   }
   if (!payload.knowledgeWrite) {
     findings.push("尚未写入知识库沉淀。");
+  } else if (payload.knowledgeWrite.status !== "success") {
+    findings.push(`知识库写入状态为 ${payload.knowledgeWrite.status}，需要检查沉淀结果。`);
   }
   if (issues.length > 0) {
     findings.push(`运行问题池记录了 ${issues.length} 个问题，需要在最终交付前逐项确认。`);
@@ -3321,22 +3627,37 @@ function finalizeDelivery(payload) {
   if (tasks.some((item) => /接口|API|参数|字段/.test(`${item.goal} ${item.title}`))) {
     rules.push("接口字段、分页、筛选参数必须来自接口文档；缺失时记录问题，不在前端猜参数。");
   }
+  if (payload.pageSmoke && payload.pageSmoke.status !== "success" && payload.pageSmoke.status !== "skipped") {
+    rules.push("页面点测失败时，应记录 URL、HTTP 状态、缺失关键词和错误文本，再生成修复任务。");
+  }
+  if (payload.validationRun && payload.validationRun.status !== "success") {
+    rules.push("命令验收未通过时，应先根据失败命令生成修复任务，不应直接进入最终交付。");
+  }
+  if (issues.some((issue) => issue.owner === "后端")) {
+    rules.push("接口能力缺失、字段不清或后端错误时，前端只记录问题并继续可做部分，不自行猜测接口参数。");
+  }
   rules.push("写代码 AI 每次只执行当前 task prompt，系统 AI review 通过后再派发下一任务。");
-  rules.push("最终交付前至少保留 task queue、review 文件、命令验收和总验收文件。");
+  rules.push("最终交付前至少保留 task queue、review 文件、命令验收、页面点测、规则候选和总验收文件。");
 
   const hasBlockingIssue = issues.some((issue) => issue.level === "P0" && issue.canContinue === false);
   const hasOpenIssues = issues.length > 0;
+  const validationPassed = payload.validationRun?.status === "success";
+  const pageSmokePassed = payload.pageSmoke?.status === "success" || payload.pageSmoke?.status === "skipped";
+  const knowledgeWritten = payload.knowledgeWrite?.status === "success";
   const status =
     counts.blocked > 0 || hasBlockingIssue
       ? "blocked"
-      : counts.done === counts.total && payload.validationRun && payload.knowledgeWrite && !hasOpenIssues
+      : counts.done === counts.total && validationPassed && pageSmokePassed && knowledgeWritten && !hasOpenIssues
         ? "success"
         : "warning";
   const acceptanceFile = join(planDirectory, "final-acceptance.auto.md");
+  const ruleSuggestionFile = join(dirname(planDirectory), "规则沉淀候选.auto.md");
   const content = createFinalAcceptanceContent(payload, tasks, reviews, counts, status, findings, rules);
+  const ruleContent = createRuleSuggestionContent(payload, tasks, findings, rules);
   writeFileSync(acceptanceFile, `${content.trim()}\n`, "utf8");
+  writeFileSync(ruleSuggestionFile, `${ruleContent.trim()}\n`, "utf8");
 
-  const writtenFiles = Array.from(new Set([...(taskPlan.writtenFiles || []), acceptanceFile, ...reviews]));
+  const writtenFiles = Array.from(new Set([...(taskPlan.writtenFiles || []), acceptanceFile, ruleSuggestionFile, ...reviews]));
   return {
     status,
     knowledgeRoot,
@@ -3344,6 +3665,7 @@ function finalizeDelivery(payload) {
     moduleDirectory: taskPlan.moduleDirectory || dirname(planDirectory),
     planDirectory,
     acceptanceFile,
+    ruleSuggestionFile,
     writtenFiles,
     taskSummary: counts,
     findings,
@@ -3353,7 +3675,7 @@ function finalizeDelivery(payload) {
         ? "总验收通过，任务队列、review、命令验收和知识沉淀均已具备。"
         : status === "blocked"
           ? "总验收阻断，存在 blocked 任务或阻断问题。"
-          : "总验收有风险，仍有任务、命令验收或知识沉淀未完成。",
+          : "总验收有风险，仍有任务、命令验收、页面点测或知识沉淀未完成。",
     generatedAt: new Date().toISOString(),
   };
 }
@@ -3549,6 +3871,40 @@ const server = createServer(async (request, response) => {
         packageManager: "unknown",
         commands: [],
         summary: error instanceof Error ? error.message : "命令验收执行失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/run-page-smoke") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = await runPageSmokeTest(payload);
+      sendJson(response, result.status === "error" ? 400 : 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        url: "",
+        httpStatus: null,
+        title: "",
+        bodyLength: 0,
+        checkedKeywords: [],
+        missingKeywords: [],
+        detectedErrors: [],
+        checks: [
+          {
+            name: "runner",
+            status: "failed",
+            message: error instanceof Error ? error.message : "页面点测失败",
+          },
+        ],
+        knowledgeRoot,
+        projectDirectory: "",
+        moduleDirectory: "",
+        smokeFile: "",
+        summary: error instanceof Error ? error.message : "页面点测失败",
         generatedAt: new Date().toISOString(),
       });
     }
@@ -3821,6 +4177,7 @@ const server = createServer(async (request, response) => {
         moduleDirectory: "",
         planDirectory: "",
         acceptanceFile: "",
+        ruleSuggestionFile: "",
         writtenFiles: [],
         taskSummary: {
           total: 0,

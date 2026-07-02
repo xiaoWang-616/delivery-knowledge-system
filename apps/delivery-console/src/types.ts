@@ -13,6 +13,8 @@ export type DeliveryTask = {
   demos: string;
   oldProjects: string;
   prds: string;
+  pageUrl: string;
+  smokeKeywords: string;
   permissions: Record<PermissionKey, boolean>;
 };
 
@@ -204,6 +206,30 @@ export type ControlledTaskExecutionResult = {
   generatedAt: string;
 };
 
+export type PageSmokeCheck = {
+  name: string;
+  status: "passed" | "failed" | "warning";
+  message: string;
+};
+
+export type PageSmokeTestResult = {
+  status: "success" | "warning" | "failed" | "error" | "skipped";
+  url: string;
+  httpStatus: number | null;
+  title: string;
+  bodyLength: number;
+  checkedKeywords: string[];
+  missingKeywords: string[];
+  detectedErrors: string[];
+  checks: PageSmokeCheck[];
+  knowledgeRoot: string;
+  projectDirectory: string;
+  moduleDirectory: string;
+  smokeFile: string;
+  summary: string;
+  generatedAt: string;
+};
+
 export type TaskReviewResult = {
   status: "success" | "error";
   decision: "approved" | "needs-fix" | "blocked";
@@ -266,6 +292,7 @@ export type FinalAcceptanceResult = {
   moduleDirectory: string;
   planDirectory: string;
   acceptanceFile: string;
+  ruleSuggestionFile: string;
   writtenFiles: string[];
   taskSummary: {
     total: number;
@@ -313,6 +340,7 @@ export type DeliveryRunRecord = {
   taskPlan: TaskPlanResult | null;
   autoDryRun: AutoDryRunResult | null;
   controlledExecution: ControlledTaskExecutionResult | null;
+  pageSmoke: PageSmokeTestResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
   steps: WorkflowStep[];
   issues: DeliveryIssue[];

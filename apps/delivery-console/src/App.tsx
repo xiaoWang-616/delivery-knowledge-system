@@ -16,6 +16,7 @@ import {
   reviewTaskResult as requestTaskReview,
   runAiAdapterTask as requestAiAdapterTaskRun,
   runControlledTask as requestControlledTaskRun,
+  runPageSmokeTest as requestPageSmokeTest,
   runValidation as requestValidationRun,
   saveRunRecord as requestRunRecordSave,
   scanProject as requestProjectScan,
@@ -47,6 +48,7 @@ import type {
   ExecutionPackageResult,
   FinalAcceptanceResult,
   KnowledgeWriteResult,
+  PageSmokeTestResult,
   PermissionKey,
   ProjectScanResult,
   RunLog,
@@ -191,6 +193,13 @@ function validationPanelStatus(result: ValidationRunResult | null): StepStatus {
   return "risk";
 }
 
+function pageSmokePanelStatus(result: PageSmokeTestResult | null): StepStatus {
+  if (!result) return "pending";
+  if (result.status === "success" || result.status === "skipped") return "done";
+  if (result.status === "failed" || result.status === "error") return "failed";
+  return "risk";
+}
+
 function knowledgePanelStatus(result: KnowledgeWriteResult | null): StepStatus {
   if (!result) return "pending";
   return result.status === "success" ? "done" : "failed";
@@ -226,11 +235,13 @@ function runtimeIssue(
 
 function deliveryRuntimeIssues({
   reviewResult,
+  pageSmoke,
   validationRun,
   knowledgeWrite,
   finalAcceptance,
 }: {
   reviewResult: TaskReviewResult | null;
+  pageSmoke: PageSmokeTestResult | null;
   validationRun: ValidationRunResult | null;
   knowledgeWrite: KnowledgeWriteResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
@@ -279,6 +290,19 @@ function deliveryRuntimeIssues({
     );
   }
 
+  if (pageSmoke && pageSmoke.status !== "success" && pageSmoke.status !== "skipped") {
+    runtimeIssues.push(
+      runtimeIssue(
+        "PAGE-SMOKE",
+        pageSmoke.status === "error" || pageSmoke.status === "failed" ? "P1" : "P2",
+        "轻量页面点测未完全通过",
+        pageSmoke.summary,
+        "测试",
+        true,
+      ),
+    );
+  }
+
   if (knowledgeWrite && knowledgeWrite.status !== "success") {
     runtimeIssues.push(
       runtimeIssue("KNOWLEDGE-WRITE", "P1", "知识库写入失败", knowledgeWrite.summary, "AI", true),
@@ -312,6 +336,9 @@ function issueRuleSuggestions(issues: DeliveryIssue[]) {
   if (issues.some((item) => item.id === "VALIDATION-COMMANDS")) {
     suggestions.add("命令验收失败要沉淀失败命令、失败原因和修复任务，不要跳过 typecheck/lint/build。");
   }
+  if (issues.some((item) => item.id === "PAGE-SMOKE")) {
+    suggestions.add("页面点测失败先沉淀 URL、缺失关键词和错误文本，再生成修复任务，避免凭感觉改页面。");
+  }
   if (issues.some((item) => item.id === "KNOWLEDGE-WRITE")) {
     suggestions.add("知识库写入失败不影响代码修复，但不能视为交付闭环完成。");
   }
@@ -323,11 +350,13 @@ function issueRuleSuggestions(issues: DeliveryIssue[]) {
 
 function deliveryNextAction({
   taskPlan,
+  pageSmoke,
   validationRun,
   knowledgeWrite,
   finalAcceptance,
 }: {
   taskPlan: TaskPlanResult | null;
+  pageSmoke: PageSmokeTestResult | null;
   validationRun: ValidationRunResult | null;
   knowledgeWrite: KnowledgeWriteResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
@@ -343,6 +372,8 @@ function deliveryNextAction({
   if (!taskPlan.tasks.every((item) => item.status === "done")) return "继续派发下一个可执行任务。";
   if (!validationRun) return "任务队列已完成，下一步执行命令验收。";
   if (validationRun.status !== "success") return "命令验收未通过，先根据失败命令生成修复任务。";
+  if (!pageSmoke) return "命令验收已通过，下一步执行轻量页面点测。";
+  if (pageSmoke.status === "failed" || pageSmoke.status === "error") return "页面点测未通过，先记录问题并生成修复任务。";
   if (knowledgeWrite?.status !== "success") return "命令验收已通过，下一步写入知识库。";
   if (!finalAcceptance) return "知识沉淀已完成，下一步生成总验收。";
   if (finalAcceptance.status === "success") return "交付闭环已完成，可以提交代码或进入下一个模块。";
@@ -635,12 +666,14 @@ function ExecutionPackagePanel({ result }: { result: ExecutionPackageResult | nu
 function DeliveryControlPanel({
   taskPlan,
   reviewResult,
+  pageSmoke,
   validationRun,
   knowledgeWrite,
   finalAcceptance,
 }: {
   taskPlan: TaskPlanResult | null;
   reviewResult: TaskReviewResult | null;
+  pageSmoke: PageSmokeTestResult | null;
   validationRun: ValidationRunResult | null;
   knowledgeWrite: KnowledgeWriteResult | null;
   finalAcceptance: FinalAcceptanceResult | null;
@@ -669,6 +702,12 @@ function DeliveryControlPanel({
       detail: validationRun?.summary || "等待执行 typecheck / lint / build",
     },
     {
+      title: "页面点测",
+      status: pageSmokePanelStatus(pageSmoke),
+      meta: pageSmoke ? pageSmoke.status : "未执行",
+      detail: pageSmoke?.summary || "等待轻量检查页面 URL、标题、关键词和错误文本",
+    },
+    {
       title: "知识沉淀",
       status: knowledgePanelStatus(knowledgeWrite),
       meta: knowledgeWrite?.status === "success" ? "已写入" : knowledgeWrite ? "写入失败" : "未写入",
@@ -692,7 +731,7 @@ function DeliveryControlPanel({
       </div>
       <div className="delivery-next-action">
         <span>下一步</span>
-        <strong>{deliveryNextAction({ taskPlan, validationRun, knowledgeWrite, finalAcceptance })}</strong>
+        <strong>{deliveryNextAction({ taskPlan, pageSmoke, validationRun, knowledgeWrite, finalAcceptance })}</strong>
       </div>
       <div className="delivery-control-grid">
         {cards.map((card) => (
@@ -1077,6 +1116,7 @@ function FinalAcceptancePanel({ result }: { result: FinalAcceptanceResult | null
       </div>
       <div className="path-list">
         <code>{result.acceptanceFile}</code>
+        <code>{result.ruleSuggestionFile || "未生成规则沉淀候选文件"}</code>
       </div>
     </section>
   );
@@ -1122,6 +1162,69 @@ function ValidationRunPanel({ result }: { result: ValidationRunResult | null }) 
             </small>
           </article>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function PageSmokePanel({ result }: { result: PageSmokeTestResult | null }) {
+  if (!result) {
+    return (
+      <section className="flat-panel page-smoke-panel">
+        <h2>轻量页面点测</h2>
+        <p className="empty-text">还没有执行页面点测。填写页面 URL 和关键词后，可检查页面是否可访问、关键词是否出现、是否有明显错误文本。</p>
+      </section>
+    );
+  }
+
+  const panelStatus = pageSmokePanelStatus(result);
+
+  return (
+    <section className="flat-panel page-smoke-panel">
+      <div className="scan-head">
+        <div>
+          <h2>轻量页面点测</h2>
+          <p>{result.summary}</p>
+        </div>
+        <StatusBadge status={panelStatus} />
+      </div>
+      <div className="validation-meta">
+        <span>状态：{result.status}</span>
+        <span>HTTP：{result.httpStatus ?? "-"}</span>
+        <span>HTML：{result.bodyLength}</span>
+        <span>时间：{formatDateTime(result.generatedAt)}</span>
+      </div>
+      <div className="page-smoke-summary">
+        <strong>{result.title || "未识别标题"}</strong>
+        <code>{result.url || "未提供 URL"}</code>
+      </div>
+      <div className="command-list">
+        {result.checks.map((item) => (
+          <article className={`command-row smoke-check-${item.status}`} key={item.name}>
+            <div>
+              <strong>{item.name}</strong>
+              <span>{item.status}</span>
+            </div>
+            <p>{item.message}</p>
+            <code>{item.status}</code>
+            <small>{item.status === "passed" ? "通过" : item.status === "warning" ? "提醒" : "失败"}</small>
+          </article>
+        ))}
+      </div>
+      {result.missingKeywords.length || result.detectedErrors.length ? (
+        <div className="smoke-warning-grid">
+          <article>
+            <strong>缺失关键词</strong>
+            <span>{result.missingKeywords.length ? result.missingKeywords.join("、") : "无"}</span>
+          </article>
+          <article>
+            <strong>错误文本</strong>
+            <span>{result.detectedErrors.length ? result.detectedErrors.join("、") : "无"}</span>
+          </article>
+        </div>
+      ) : null}
+      <div className="path-list">
+        <code>{result.smokeFile || "未生成点测报告"}</code>
       </div>
     </section>
   );
@@ -1415,6 +1518,7 @@ function App() {
   const [taskDispatch, setTaskDispatch] = useState<TaskDispatchResult | null>(null);
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
+  const [pageSmoke, setPageSmoke] = useState<PageSmokeTestResult | null>(null);
   const [validationRun, setValidationRun] = useState<ValidationRunResult | null>(null);
   const [finalAcceptance, setFinalAcceptance] = useState<FinalAcceptanceResult | null>(null);
   const [currentRunId, setCurrentRunId] = useState(() => loadRunId() || createRunId());
@@ -1437,6 +1541,7 @@ function App() {
   const [reviewingTask, setReviewingTask] = useState(false);
   const [creatingIssueFixId, setCreatingIssueFixId] = useState<string | null>(null);
   const [writingKnowledge, setWritingKnowledge] = useState(false);
+  const [runningPageSmoke, setRunningPageSmoke] = useState(false);
   const [runningValidation, setRunningValidation] = useState(false);
   const [finalizingAcceptance, setFinalizingAcceptance] = useState(false);
   const [savingRunRecord, setSavingRunRecord] = useState(false);
@@ -1447,8 +1552,8 @@ function App() {
   const steps = useMemo(() => evaluateWorkflow(task, runtime, projectScan), [task, runtime, projectScan]);
   const baseIssues = useMemo(() => collectIssues(steps), [steps]);
   const runtimeIssues = useMemo(
-    () => deliveryRuntimeIssues({ reviewResult: taskReview, validationRun, knowledgeWrite, finalAcceptance }),
-    [taskReview, validationRun, knowledgeWrite, finalAcceptance],
+    () => deliveryRuntimeIssues({ reviewResult: taskReview, pageSmoke, validationRun, knowledgeWrite, finalAcceptance }),
+    [taskReview, pageSmoke, validationRun, knowledgeWrite, finalAcceptance],
   );
   const issues = useMemo(() => mergeDeliveryIssues(baseIssues, runtimeIssues), [baseIssues, runtimeIssues]);
   const issueRules = useMemo(() => issueRuleSuggestions(issues), [issues]);
@@ -1509,12 +1614,14 @@ function App() {
     const recordValidationRun = overrides.validationRun === undefined ? validationRun : overrides.validationRun;
     const recordKnowledgeWrite = overrides.knowledgeWrite === undefined ? knowledgeWrite : overrides.knowledgeWrite;
     const recordFinalAcceptance = overrides.finalAcceptance === undefined ? finalAcceptance : overrides.finalAcceptance;
+    const recordPageSmoke = overrides.pageSmoke === undefined ? pageSmoke : overrides.pageSmoke;
     const recordAutoDryRun = overrides.autoDryRun === undefined ? autoDryRun : overrides.autoDryRun;
     const recordControlledExecution =
       overrides.controlledExecution === undefined ? controlledExecution : overrides.controlledExecution;
     const recordSteps = overrides.steps || evaluateWorkflow(recordTask, recordRuntime, recordProjectScan);
     const recordRuntimeIssues = deliveryRuntimeIssues({
       reviewResult: taskReview,
+      pageSmoke: recordPageSmoke,
       validationRun: recordValidationRun,
       knowledgeWrite: recordKnowledgeWrite,
       finalAcceptance: recordFinalAcceptance,
@@ -1534,6 +1641,7 @@ function App() {
       taskPlan,
       autoDryRun: recordAutoDryRun,
       controlledExecution: recordControlledExecution,
+      pageSmoke: recordPageSmoke,
       finalAcceptance: recordFinalAcceptance,
       steps: recordSteps,
       issues: recordIssues,
@@ -1569,7 +1677,14 @@ function App() {
   function applyRunRecord(record: DeliveryRunRecord, message: string) {
     setCurrentRunId(record.runId || createRunId());
     setRunCreatedAt(record.createdAt || new Date().toISOString());
-    setTask(record.task || defaultTask);
+    setTask({
+      ...defaultTask,
+      ...(record.task || {}),
+      permissions: {
+        ...defaultTask.permissions,
+        ...((record.task || {}).permissions || {}),
+      },
+    });
     setRuntime(record.runtime || {});
     setLogs([createLog(message, "success"), ...(record.logs || [])].slice(0, 80));
     setProjectScan(record.projectScan || null);
@@ -1580,6 +1695,7 @@ function App() {
     setTaskPlan(record.taskPlan || null);
     setAutoDryRun(record.autoDryRun || null);
     setControlledExecution(record.controlledExecution || null);
+    setPageSmoke(record.pageSmoke || null);
     setFinalAcceptance(record.finalAcceptance || null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1649,6 +1765,7 @@ function App() {
     setTaskPlan(null);
     setAutoDryRun(null);
     setControlledExecution(null);
+    setPageSmoke(null);
     setFinalAcceptance(null);
     setTaskDispatch(null);
     setTaskReview(null);
@@ -1914,9 +2031,10 @@ function App() {
       setTaskReview(null);
       setAiAdapterRun(null);
       setControlledExecution(null);
+      setPageSmoke(null);
       setTaskReport("");
       appendLog(result.summary, "success");
-      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null, controlledExecution: null });
+      await saveCurrentRunRecord(true, { taskPlan: result, autoDryRun: null, controlledExecution: null, pageSmoke: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "设计与任务队列生成失败";
       const failedTaskPlan: TaskPlanResult = {
@@ -1933,8 +2051,9 @@ function App() {
       setTaskPlan(failedTaskPlan);
       setAutoDryRun(null);
       setControlledExecution(null);
+      setPageSmoke(null);
       appendLog(message, "error");
-      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan, autoDryRun: null, controlledExecution: null });
+      await saveCurrentRunRecord(true, { taskPlan: failedTaskPlan, autoDryRun: null, controlledExecution: null, pageSmoke: null });
     } finally {
       setPreparingTaskPlan(false);
     }
@@ -2317,6 +2436,59 @@ function App() {
     }
   }
 
+  async function runCurrentPageSmoke() {
+    if (!task.permissions.allowRunCommands) {
+      appendLog("当前没有授权运行点测。", "warning");
+      return;
+    }
+    if (!task.pageUrl.trim()) {
+      appendLog("请先在任务包里填写页面点测 URL。", "warning");
+      setTab("task");
+      return;
+    }
+
+    setRunningPageSmoke(true);
+    appendLog(`开始轻量页面点测：${task.pageUrl}`, "info");
+
+    try {
+      const result = await requestPageSmokeTest({ task, projectScan, taskPlan });
+      setPageSmoke(result);
+      appendLog(
+        result.summary,
+        result.status === "success" || result.status === "skipped"
+          ? "success"
+          : result.status === "warning"
+            ? "warning"
+            : "error",
+      );
+      await saveCurrentRunRecord(true, { pageSmoke: result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "页面点测执行失败";
+      const failedSmoke: PageSmokeTestResult = {
+        status: "error",
+        url: task.pageUrl,
+        httpStatus: null,
+        title: "",
+        bodyLength: 0,
+        checkedKeywords: [],
+        missingKeywords: [],
+        detectedErrors: [],
+        checks: [{ name: "runner", status: "failed", message }],
+        knowledgeRoot: "",
+        projectDirectory: "",
+        moduleDirectory: "",
+        smokeFile: "",
+        summary: message,
+        generatedAt: new Date().toISOString(),
+      };
+      setPageSmoke(failedSmoke);
+      appendLog(message, "error");
+      await saveCurrentRunRecord(true, { pageSmoke: failedSmoke });
+    } finally {
+      setRunningPageSmoke(false);
+    }
+  }
+
   async function finalizeCurrentDelivery() {
     if (!taskPlan) {
       appendLog("请先生成设计与任务队列。", "warning");
@@ -2332,6 +2504,7 @@ function App() {
         taskPlan,
         issues,
         validationRun,
+        pageSmoke,
         knowledgeWrite,
       });
       setFinalAcceptance(result);
@@ -2346,6 +2519,7 @@ function App() {
         moduleDirectory: "",
         planDirectory: "",
         acceptanceFile: "",
+        ruleSuggestionFile: "",
         writtenFiles: [],
         taskSummary: {
           total: 0,
@@ -2518,6 +2692,18 @@ function App() {
                 <FieldLabel title="PRD / 需求资料" hint="一行一个路径或链接" />
                 <TextArea value={task.prds} onChange={(value) => updateTask("prds", value)} placeholder="飞书文档、本地 Markdown、截图说明。" />
               </div>
+              <div className="field">
+                <FieldLabel title="页面点测 URL" hint="本地或测试环境页面地址" />
+                <TextInput value={task.pageUrl} onChange={(value) => updateTask("pageUrl", value)} placeholder="http://localhost:1688/agent-list" />
+              </div>
+              <div className="field">
+                <FieldLabel title="点测关键词" hint="一行一个页面应出现的文本" />
+                <TextArea
+                  value={task.smokeKeywords}
+                  onChange={(value) => updateTask("smokeKeywords", value)}
+                  placeholder="模块标题&#10;关键按钮&#10;表格列名"
+                />
+              </div>
             </div>
 
             <div className="permission-grid">
@@ -2651,6 +2837,9 @@ function App() {
                 <button className="secondary-button" onClick={runCurrentValidation} disabled={runningValidation}>
                   {runningValidation ? "验收中" : "执行命令验收"}
                 </button>
+                <button className="secondary-button" onClick={runCurrentPageSmoke} disabled={runningPageSmoke}>
+                  {runningPageSmoke ? "点测中" : "轻量页面点测"}
+                </button>
                 <button className="secondary-button" onClick={writeCurrentKnowledge} disabled={writingKnowledge}>
                   {writingKnowledge ? "写入中" : "写入知识库"}
                 </button>
@@ -2665,6 +2854,7 @@ function App() {
             <DeliveryControlPanel
               taskPlan={taskPlan}
               reviewResult={taskReview}
+              pageSmoke={pageSmoke}
               validationRun={validationRun}
               knowledgeWrite={knowledgeWrite}
               finalAcceptance={finalAcceptance}
@@ -2695,6 +2885,7 @@ function App() {
               onReview={() => void reviewCurrentTaskReport()}
             />
             <ValidationRunPanel result={validationRun} />
+            <PageSmokePanel result={pageSmoke} />
             <KnowledgeWritePanel result={knowledgeWrite} />
             <FinalAcceptancePanel result={finalAcceptance} />
             <pre className="markdown-preview">{markdown}</pre>

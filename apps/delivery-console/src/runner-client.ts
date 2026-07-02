@@ -11,6 +11,7 @@ import type {
   FinalAcceptanceResult,
   IssueFixTaskResult,
   KnowledgeWriteResult,
+  PageSmokeTestResult,
   ProjectScanResult,
   RunRecordListResult,
   RunRecordSaveResult,
@@ -255,6 +256,22 @@ export async function runControlledTask(payload: {
   return readJson<ControlledTaskExecutionResult>(response);
 }
 
+export async function runPageSmokeTest(payload: {
+  task: DeliveryTask;
+  projectScan: ProjectScanResult | null;
+  taskPlan: TaskPlanResult | null;
+}): Promise<PageSmokeTestResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/run-page-smoke`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<PageSmokeTestResult>(response);
+}
+
 export async function createIssueFixTask(payload: {
   task: DeliveryTask;
   taskPlan: TaskPlanResult;
@@ -308,6 +325,7 @@ export async function finalizeDelivery(payload: {
   taskPlan: TaskPlanResult;
   issues: DeliveryIssue[];
   validationRun: ValidationRunResult | null;
+  pageSmoke: PageSmokeTestResult | null;
   knowledgeWrite: KnowledgeWriteResult | null;
 }): Promise<FinalAcceptanceResult> {
   const response = await fetch(`${runnerBaseUrl}/api/finalize-delivery`, {
