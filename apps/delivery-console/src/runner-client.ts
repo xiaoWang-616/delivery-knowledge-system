@@ -1,4 +1,6 @@
 import type {
+  AiAdapterStatusResult,
+  AiAdapterTaskRunResult,
   AutoDryRunResult,
   ContextPackageResult,
   DeliveryIssue,
@@ -212,6 +214,27 @@ export async function dispatchTask(payload: {
   });
 
   return readJson<TaskDispatchResult>(response);
+}
+
+export async function getAiAdapterStatus(): Promise<AiAdapterStatusResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/ai-adapter/status`);
+  return readJson<AiAdapterStatusResult>(response);
+}
+
+export async function runAiAdapterTask(payload: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult;
+  taskId?: string;
+}): Promise<AiAdapterTaskRunResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/ai-adapter/run-task`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<AiAdapterTaskRunResult>(response);
 }
 
 export async function createIssueFixTask(payload: {

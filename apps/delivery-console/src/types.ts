@@ -161,6 +161,29 @@ export type TaskDispatchResult = {
   generatedAt: string;
 };
 
+export type AiAdapterStatusResult = {
+  status: "success" | "warning" | "error";
+  provider: "manual" | "mock" | "disabled";
+  canAutoRun: boolean;
+  requiresManualInput: boolean;
+  configSource: string;
+  warnings: string[];
+  summary: string;
+  generatedAt: string;
+};
+
+export type AiAdapterTaskRunResult = {
+  status: "success" | "manual-required" | "error";
+  provider: AiAdapterStatusResult["provider"];
+  taskId: string;
+  promptContent: string;
+  report: string;
+  reportFile: string;
+  updatedTaskPlan: TaskPlanResult | null;
+  summary: string;
+  generatedAt: string;
+};
+
 export type TaskReviewResult = {
   status: "success" | "error";
   decision: "approved" | "needs-fix" | "blocked";

@@ -8,6 +8,7 @@ const port = Number(process.env.DELIVERY_RUNNER_PORT || 5176);
 const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const knowledgeRoot = process.env.DELIVERY_KB_ROOT || join(runnerDirectory, "../../..");
 const codingAgentProtocolPath = join(knowledgeRoot, "02-模块交付", "写代码AI单任务协议.md");
+const aiProvider = String(process.env.DELIVERY_AI_PROVIDER || "manual").trim().toLowerCase();
 const maxPreviewItems = 80;
 const ignoredNames = new Set([
   ".git",
@@ -2213,6 +2214,107 @@ async function dispatchTask(payload) {
   };
 }
 
+function aiAdapterStatus() {
+  const provider = aiProvider === "mock" ? "mock" : aiProvider === "disabled" ? "disabled" : "manual";
+  const warnings = [];
+  if (provider === "manual") {
+    warnings.push("当前为 manual 模式：runner 只生成单任务 prompt，仍需人工复制给写代码 AI。");
+  }
+  if (provider === "mock") {
+    warnings.push("当前为 mock 模式：只生成测试报告，不会修改真实项目，也不能代表真实开发完成。");
+  }
+  if (provider === "disabled") {
+    warnings.push("AI adapter 已禁用，只能使用手工派发和回填报告。");
+  }
+
+  return {
+    status: provider === "disabled" ? "warning" : "success",
+    provider,
+    canAutoRun: provider === "mock",
+    requiresManualInput: provider !== "mock",
+    configSource: "DELIVERY_AI_PROVIDER",
+    warnings,
+    summary:
+      provider === "mock"
+        ? "AI adapter 当前为 mock provider，可用于验证调度流程。"
+        : provider === "disabled"
+          ? "AI adapter 当前禁用。"
+          : "AI adapter 当前为 manual provider，需要人工把 prompt 交给写代码 AI。",
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function createMockAdapterReport(taskItem) {
+  return `任务编号：${taskItem.id}
+实际改动文件：
+无（mock provider 未修改真实项目）
+完成内容：
+mock provider 已收到单任务 prompt，并生成这份测试报告，用于验证 AI adapter 调度链路。
+运行命令和结果：
+未运行。mock provider 不执行真实项目命令。
+未完成内容：
+mock provider 没有真实写代码，不能作为当前任务完成依据。
+新增问题：
+mock provider 仅用于测试 adapter 抽象，真实开发仍需要接入人工或真实 AI provider。
+建议下一步：
+接入真实 provider 前，继续使用 manual 模式把 prompt 交给写代码 AI，并由系统 AI review。`;
+}
+
+function writeAiAdapterRunFile(planDirectory, provider, taskId, promptContent, report) {
+  const directory = join(planDirectory, "ai-adapter-runs");
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, `${taskId}-${provider}-${timestampForFile()}.md`);
+  writeFileSync(
+    file,
+    `# AI adapter run
+
+- provider：${provider}
+- task：${taskId}
+- generatedAt：${new Date().toISOString()}
+
+## prompt 摘要
+
+- prompt 字符数：${promptContent.length}
+
+## report
+
+\`\`\`text
+${report || "manual 模式不生成报告。"}
+\`\`\`
+`,
+    "utf8",
+  );
+  return file;
+}
+
+async function runTaskWithAiAdapter(payload) {
+  const status = aiAdapterStatus();
+  if (status.provider === "disabled") {
+    throw new Error("AI adapter 已禁用，不能执行当前任务。");
+  }
+
+  const dispatch = await dispatchTask(payload);
+  const { planDirectory } = taskPlanStateFromPayload({ ...payload, taskPlan: dispatch.updatedTaskPlan || payload.taskPlan });
+  const taskId = dispatch.taskId;
+  const report = status.provider === "mock" ? createMockAdapterReport({ id: taskId }) : "";
+  const reportFile = writeAiAdapterRunFile(planDirectory, status.provider, taskId, dispatch.promptContent, report);
+
+  return {
+    status: status.provider === "manual" ? "manual-required" : "success",
+    provider: status.provider,
+    taskId,
+    promptContent: dispatch.promptContent,
+    report,
+    reportFile,
+    updatedTaskPlan: dispatch.updatedTaskPlan,
+    summary:
+      status.provider === "manual"
+        ? `manual adapter 已准备 ${taskId} prompt，请人工交给写代码 AI。`
+        : `mock adapter 已生成 ${taskId} 测试报告，未修改真实项目。`,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function reportField(report, label) {
   const labels = ["任务编号", "实际改动文件", "完成内容", "运行命令和结果", "未完成内容", "新增问题", "建议下一步"];
   const nextLabels = labels.filter((item) => item !== label).join("|");
@@ -3219,6 +3321,12 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && request.url === "/api/ai-adapter/status") {
+    const result = aiAdapterStatus();
+    sendJson(response, result.status === "error" ? 500 : 200, result);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/api/scan-project") {
     try {
       const body = await readBody(request);
@@ -3384,6 +3492,28 @@ const server = createServer(async (request, response) => {
         promptContent: "",
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "任务派发失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/ai-adapter/run-task") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = await runTaskWithAiAdapter(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        provider: aiAdapterStatus().provider,
+        taskId: "",
+        promptContent: "",
+        report: "",
+        reportFile: "",
+        updatedTaskPlan: null,
+        summary: error instanceof Error ? error.message : "AI adapter 执行任务失败",
         generatedAt: new Date().toISOString(),
       });
     }
