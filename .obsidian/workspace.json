@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "04-问题复盘/规则沉淀模板.md",
+                "file": "02-模块交付/开发步骤卡片模板.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "规则沉淀模板"
+              "title": "开发步骤卡片模板"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "04-问题复盘/规则沉淀模板.md",
+                "file": "02-模块交付/开发步骤卡片模板.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "规则沉淀模板 的反向链接列表"
+              "title": "开发步骤卡片模板 的反向链接列表"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "04-问题复盘/规则沉淀模板.md",
+                "file": "02-模块交付/开发步骤卡片模板.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "规则沉淀模板 的出链列表"
+              "title": "开发步骤卡片模板 的出链列表"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "04-问题复盘/规则沉淀模板.md",
+                "file": "02-模块交付/开发步骤卡片模板.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "规则沉淀模板 的大纲"
+              "title": "开发步骤卡片模板 的大纲"
             }
           }
         ]
@@ -183,41 +183,44 @@
       "bases:新建数据库": false
     }
   },
-  "active": "f9f93e8e9d9adef0",
+  "active": "65161bec7d011a04",
   "lastOpenFiles": [
-    "11-规则库/项目差异规则.md",
-    "11-规则库/AI写代码规则.md",
-    "11-规则库/性能规则.md",
-    "11-规则库/样式规则.md",
-    "11-规则库/接口规则.md",
-    "11-规则库/README.md",
-    "11-规则库",
-    "10-测试修复闭环/二次修复启动提示词.md",
-    "10-测试修复闭环/人工确认清单.md",
-    "10-测试修复闭环/问题汇总模板.md",
-    "10-测试修复闭环/测试执行说明.md",
-    "10-测试修复闭环/README.md",
-    "10-测试修复闭环",
-    "09-模块看板/问题追踪看板模板.md",
-    "09-模块看板/开发进度看板模板.md",
-    "09-模块看板/模块依赖看板模板.md",
-    "09-模块看板/模块状态卡片模板.md",
-    "09-模块看板/README.md",
-    "09-模块看板",
-    "08-项目实例/项目实例模板/风险清单.md",
-    "08-项目实例/项目实例模板/交付看板.md",
-    "08-项目实例/项目实例模板/模块清单.md",
-    "08-项目实例/项目实例模板/资料清单.md",
-    "08-项目实例/项目实例模板/项目总览.md",
-    "08-项目实例/项目实例模板/README.md",
-    "08-项目实例/项目实例模板",
-    "08-项目实例",
-    "05-AI提示词/新模块启动总提示词.md",
-    "07-使用手册/新模块启动流程.md",
-    "07-使用手册/从0开始使用.md",
-    "07-使用手册",
-    "00-系统说明/阻塞分级规则.md",
-    "未命名.base",
+    "apps/delivery-console/dist/assets/index-BtnLwMCf.js",
+    "apps/delivery-console/dist/assets/index-BP4OF_zE.css",
+    "07-使用手册/提交前检查.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-queue.auto.json",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-08.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-07.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-06.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-05.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-04.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-03.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-02.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/task-01.prompt.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/review-checklist.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/progress.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务/module-design.auto.md",
+    "08-项目实例/delivery-console/恢复任务队列验收/设计与任务",
+    "08-项目实例/delivery-console/恢复任务队列验收",
+    "apps/delivery-console/dist/assets/index-B078vcvm.js",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/reviews/task-01-review-20260702T034538Z.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-queue.auto.json",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-08.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-07.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-06.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-05.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-04.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-03.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-02.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/task-01.prompt.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/reviews",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/review-checklist.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/progress.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/module-design.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务/final-acceptance.auto.md",
+    "08-项目实例/delivery-console/总验收验收/设计与任务",
+    "08-项目实例/delivery-console/总验收验收",
+    "apps/delivery-console/dist/assets/index-B330e6hv.js",
     "未命名.canvas"
   ]
 }

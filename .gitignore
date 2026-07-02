@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+apps/**/node_modules/
+
+# Build outputs
+dist/
+apps/**/dist/
+*.tsbuildinfo
+
+# Vite cache
+.vite/
+apps/**/node_modules/.vite/
+apps/**/node_modules/.vite-temp/
+
+# Logs
+*.log
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+
+# Obsidian local workspace state
+.obsidian/workspace.json
+.obsidian/graph.json
+*.canvas
+
+# Delivery console smoke/generated validation workspaces
+08-项目实例/delivery-console-smoke/
+08-项目实例/delivery-console/
+
+# Generated run records are local execution history by default
+08-项目实例/**/runs/
