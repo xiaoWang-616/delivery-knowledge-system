@@ -17,6 +17,7 @@ import type {
   RunRecordListResult,
   RunRecordSaveResult,
   SystemHealthResult,
+  SystemQuestionResult,
   TaskDispatchResult,
   TaskPlanResult,
   TaskReviewResult,
@@ -43,6 +44,18 @@ async function readJson<T>(response: Response): Promise<T> {
 export async function getSystemHealth(): Promise<SystemHealthResult> {
   const response = await fetch(`${runnerBaseUrl}/api/health`);
   return readJson<SystemHealthResult>(response);
+}
+
+export async function askSystemQuestion(payload: { question: string; task: DeliveryTask; taskPlan: TaskPlanResult | null }): Promise<SystemQuestionResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/system-question`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<SystemQuestionResult>(response);
 }
 
 export async function scanProject(projectPath: string): Promise<ProjectScanResult> {

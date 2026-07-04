@@ -83,6 +83,14 @@ export type SystemHealthResult = {
   generatedAt: string;
 };
 
+export type SystemQuestionResult = {
+  status: "success" | "error";
+  question: string;
+  answer: string;
+  boundary: string[];
+  generatedAt: string;
+};
+
 export type KnowledgeWriteResult = {
   status: "success" | "error";
   knowledgeRoot: string;
@@ -252,7 +260,18 @@ export type IssueFixTaskResult = {
   generatedAt: string;
 };
 
+export type UserFeedbackImageAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  dataUrl: string;
+};
+
 export type UserFeedbackInput = {
+  message: string;
+  attachments: string;
+  imageAttachments: UserFeedbackImageAttachment[];
   title: string;
   description: string;
   expected: string;

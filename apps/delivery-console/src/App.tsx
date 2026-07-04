@@ -3,6 +3,7 @@ import { generateDeliveryMarkdown } from "./markdown";
 import {
   autoAdvanceOnce as requestAutoAdvanceOnce,
   autoRunUntilPause as requestAutoRunUntilPause,
+  askSystemQuestion as requestSystemQuestion,
   createIssueFixTask as requestIssueFixTask,
   createUserFeedbackTask as requestUserFeedbackTask,
   dispatchTask as requestTaskDispatch,
@@ -58,10 +59,12 @@ import type {
   RuntimeState,
   StepStatus,
   SystemHealthResult,
+  SystemQuestionResult,
   TaskDispatchResult,
   TaskPlanResult,
   TaskReviewResult,
   UserFeedbackInput,
+  UserFeedbackImageAttachment,
   UserFeedbackTaskResult,
   ValidationRunResult,
   WorkflowStep,
@@ -69,6 +72,15 @@ import type {
 import { collectIssues, evaluateWorkflow, summarizeProgress } from "./workflow";
 
 type TabKey = "task" | "plan" | "issues" | "result";
+
+type FeedbackChatMessage = {
+  id: string;
+  role: "user" | "system";
+  kind: "question" | "fix";
+  text: string;
+  meta?: string;
+  createdAt: string;
+};
 
 type ExecutionDecision = {
   phase: string;
@@ -1162,57 +1174,123 @@ function IssueTable({
 
 function UserFeedbackPanel({
   feedback,
+  messages,
   result,
+  questionResult,
+  asking,
   submitting,
   taskPlan,
   onChange,
-  onSubmit,
+  onAttachImages,
+  onRemoveImage,
+  onAskSystem,
+  onSubmitFix,
 }: {
   feedback: UserFeedbackInput;
+  messages: FeedbackChatMessage[];
   result: UserFeedbackTaskResult | null;
+  questionResult: SystemQuestionResult | null;
+  asking: boolean;
   submitting: boolean;
   taskPlan: TaskPlanResult | null;
   onChange: (key: keyof UserFeedbackInput, value: string) => void;
-  onSubmit: () => void;
+  onAttachImages: (files: FileList | null) => void;
+  onRemoveImage: (id: string) => void;
+  onAskSystem: () => void;
+  onSubmitFix: () => void;
 }) {
-  const canSubmit = Boolean(taskPlan && (feedback.title.trim() || feedback.description.trim()));
+  const hasMessage = Boolean(feedback.message.trim() || feedback.attachments.trim() || feedback.imageAttachments.length);
+  const canAsk = hasMessage;
+  const canSubmitFix = Boolean(taskPlan && hasMessage);
 
   return (
     <section className="flat-panel feedback-panel">
       <div className="scan-head">
         <div>
-          <h3>提交修改要求</h3>
-          <p>给系统 AI 留返工入口：它会生成独立 fix task，写代码 AI 的回答、改动摘要和系统 review 会继续沉淀。</p>
+          <h3>返工对话</h3>
+          <p>同一个入口可以问系统 AI，也可以把问题转成目标项目的修改任务；系统本身不会在这里被 AI 修改。</p>
         </div>
-        <button className="primary-button" onClick={onSubmit} disabled={!canSubmit || submitting}>
-          {submitting ? "生成中" : "生成返工任务"}
-        </button>
+        <div className="panel-actions">
+          <button className="secondary-button" onClick={onAskSystem} disabled={!canAsk || asking || submitting}>
+            {asking ? "回答中" : "问系统 AI"}
+          </button>
+          <button className="primary-button" onClick={onSubmitFix} disabled={!canSubmitFix || asking || submitting}>
+            {submitting ? "生成中" : "生成修改任务"}
+          </button>
+        </div>
       </div>
 
-      <div className="feedback-form-grid">
-        <label>
-          <span>问题标题</span>
-          <TextInput value={feedback.title} onChange={(value) => onChange("title", value)} placeholder="例如 省市区筛选结果为空" />
-        </label>
-        <label>
-          <span>期望结果</span>
-          <TextInput value={feedback.expected} onChange={(value) => onChange("expected", value)} placeholder="例如 选中东城区后列表应显示匹配代理商" />
-        </label>
-        <label>
-          <span>问题描述</span>
-          <TextArea value={feedback.description} onChange={(value) => onChange("description", value)} rows={4} placeholder="说明在哪里出了问题、当前表现是什么。" />
-        </label>
-        <label>
-          <span>证据 / 页面 / 接口</span>
-          <TextArea value={feedback.evidence} onChange={(value) => onChange("evidence", value)} rows={4} placeholder="页面 URL、截图说明、接口路径、控制台报错或参考 Demo。" />
-        </label>
-        <label className="feedback-wide-field">
-          <span>验收方式</span>
-          <TextArea value={feedback.acceptance} onChange={(value) => onChange("acceptance", value)} rows={3} placeholder="修完以后怎么证明正确，例如输入关键词、点击路径、需要通过的命令。" />
-        </label>
+      <div className="feedback-chat-box">
+        <TextArea
+          value={feedback.message}
+          onChange={(value) => onChange("message", value)}
+          rows={6}
+          placeholder="直接说问题就行。例如：代理商管理里选东城区后列表为空，接口明明有数据。期望选区后能请求并显示对应代理商。"
+        />
+        <TextInput
+          value={feedback.attachments}
+          onChange={(value) => onChange("attachments", value)}
+          placeholder="可选：截图/文件/页面路径，一行或多个路径都可以直接粘贴在这里"
+        />
+        <div className="feedback-chat-actions">
+          <label className="feedback-upload-button">
+            <span>加入图片</span>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                onAttachImages(event.currentTarget.files);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+          {feedback.imageAttachments.length ? <span>{feedback.imageAttachments.length} 张图片已加入</span> : null}
+        </div>
+        {feedback.imageAttachments.length ? (
+          <div className="feedback-image-grid">
+            {feedback.imageAttachments.map((image) => (
+              <article className="feedback-image-card" key={image.id}>
+                <img src={image.dataUrl} alt={image.name} />
+                <div>
+                  <span>{image.name}</span>
+                  <button type="button" onClick={() => onRemoveImage(image.id)}>
+                    移除
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
       </div>
 
-      {!taskPlan ? <p className="feedback-warning">需要先生成设计与任务队列，系统才知道把返工任务插到哪里。</p> : null}
+      {!taskPlan ? <p className="feedback-warning">还没有设计与任务队列时，可以先问系统 AI；生成修改任务需要先开始交付并生成队列。</p> : null}
+
+      {messages.length ? (
+        <div className="feedback-chat-thread">
+          {messages.map((message) => (
+            <article className={`feedback-chat-message feedback-chat-${message.role}`} key={message.id}>
+              <strong>{message.role === "user" ? "用户" : message.kind === "fix" ? "系统 AI / 修改任务" : "系统 AI"}</strong>
+              <span>{message.text}</span>
+              {message.meta ? <small>{message.meta}</small> : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      {questionResult ? (
+        <div className="feedback-result feedback-answer-result">
+          <article className="feedback-chat-message feedback-chat-system">
+            <strong>系统 AI</strong>
+            <span>{questionResult.answer}</span>
+          </article>
+          <ul>
+            {questionResult.boundary.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {result ? (
         <div className="feedback-result">
@@ -1220,7 +1298,10 @@ function UserFeedbackPanel({
             <strong>{result.summary}</strong>
             <span>任务：{result.taskId}</span>
           </div>
-          <p>{result.aiReply}</p>
+          <article className="feedback-chat-message">
+            <strong>系统 AI</strong>
+            <span>{result.aiReply}</span>
+          </article>
           <p>{result.changedSummary}</p>
           <div className="feedback-file-grid">
             <code>{result.promptFile}</code>
@@ -1852,8 +1933,31 @@ function ModuleDependencyGraph({
   );
 }
 
+const feedbackImageLimit = 4;
+const feedbackImageMaxBytes = 2 * 1024 * 1024;
+
+function readFeedbackImageAttachment(file: File): Promise<UserFeedbackImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve({
+        id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+        name: file.name,
+        type: file.type || "image/png",
+        size: file.size,
+        dataUrl: String(reader.result || ""),
+      });
+    };
+    reader.onerror = () => reject(new Error(`图片读取失败：${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 function emptyUserFeedbackInput(): UserFeedbackInput {
   return {
+    message: "",
+    attachments: "",
+    imageAttachments: [],
     title: "",
     description: "",
     expected: "",
@@ -1881,6 +1985,8 @@ function App() {
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
   const [userFeedback, setUserFeedback] = useState<UserFeedbackInput>(() => emptyUserFeedbackInput());
+  const [feedbackMessages, setFeedbackMessages] = useState<FeedbackChatMessage[]>([]);
+  const [systemQuestionResult, setSystemQuestionResult] = useState<SystemQuestionResult | null>(null);
   const [userFeedbackResult, setUserFeedbackResult] = useState<UserFeedbackTaskResult | null>(null);
   const [pageSmoke, setPageSmoke] = useState<PageSmokeTestResult | null>(null);
   const [validationRun, setValidationRun] = useState<ValidationRunResult | null>(null);
@@ -1903,6 +2009,7 @@ function App() {
   const [dispatchingTask, setDispatchingTask] = useState(false);
   const [reviewingTask, setReviewingTask] = useState(false);
   const [creatingIssueFixId, setCreatingIssueFixId] = useState<string | null>(null);
+  const [askingSystemQuestion, setAskingSystemQuestion] = useState(false);
   const [submittingUserFeedback, setSubmittingUserFeedback] = useState(false);
   const [writingKnowledge, setWritingKnowledge] = useState(false);
   const [runningPageSmoke, setRunningPageSmoke] = useState(false);
@@ -2688,6 +2795,98 @@ function App() {
     setUserFeedback((current) => ({ ...current, [key]: value }));
   }
 
+  async function attachUserFeedbackImages(files: FileList | null) {
+    const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) {
+      appendLog("请选择图片文件。", "warning");
+      return;
+    }
+
+    const restCount = Math.max(0, feedbackImageLimit - userFeedback.imageAttachments.length);
+    if (!restCount) {
+      appendLog(`最多只能加入 ${feedbackImageLimit} 张图片。`, "warning");
+      return;
+    }
+
+    const sizeAccepted = imageFiles.filter((file) => file.size <= feedbackImageMaxBytes);
+    const accepted = sizeAccepted.slice(0, restCount);
+    const skippedCount = imageFiles.length - accepted.length;
+    if (skippedCount > 0) {
+      appendLog(`有 ${skippedCount} 张图片因数量或大小限制未加入。`, "warning");
+    }
+    if (!accepted.length) {
+      return;
+    }
+
+    try {
+      const attachments = await Promise.all(accepted.map(readFeedbackImageAttachment));
+      setUserFeedback((current) => ({
+        ...current,
+        imageAttachments: [...current.imageAttachments, ...attachments].slice(0, feedbackImageLimit),
+      }));
+      appendLog(`已加入 ${attachments.length} 张返工图片。`, "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "图片读取失败";
+      appendLog(message, "error");
+    }
+  }
+
+  function removeUserFeedbackImage(id: string) {
+    setUserFeedback((current) => ({
+      ...current,
+      imageAttachments: current.imageAttachments.filter((image) => image.id !== id),
+    }));
+  }
+
+  function feedbackMessageText(input: UserFeedbackInput) {
+    return [
+      input.message.trim(),
+      input.attachments.trim() ? `附件/路径：\n${input.attachments.trim()}` : "",
+      input.imageAttachments.length ? `图片：${input.imageAttachments.map((image) => image.name).join("、")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  function appendFeedbackMessage(role: FeedbackChatMessage["role"], kind: FeedbackChatMessage["kind"], text: string, meta?: string) {
+    setFeedbackMessages((current) => [
+      ...current,
+      {
+        id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+        role,
+        kind,
+        text,
+        meta,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }
+
+  async function askSystemAiAboutFeedback() {
+    if (!userFeedback.message.trim() && !userFeedback.attachments.trim() && !userFeedback.imageAttachments.length) {
+      appendLog("请先输入要问系统 AI 的问题。", "warning");
+      return;
+    }
+
+    const userText = feedbackMessageText(userFeedback);
+    appendFeedbackMessage("user", "question", userText);
+    setAskingSystemQuestion(true);
+    appendLog("系统 AI 正在回答用户问题。", "info");
+
+    try {
+      const result = await requestSystemQuestion({ question: userText, task, taskPlan });
+      setSystemQuestionResult(result);
+      appendFeedbackMessage("system", "question", result.answer, result.boundary.join(" / "));
+      setUserFeedback(emptyUserFeedbackInput());
+      appendLog("系统 AI 已回答。", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "系统 AI 回答失败";
+      appendLog(message, "error");
+    } finally {
+      setAskingSystemQuestion(false);
+    }
+  }
+
   async function submitUserFeedbackTask() {
     if (!taskPlan) {
       appendLog("请先生成设计与任务队列，再提交返工要求。", "warning");
@@ -2695,17 +2894,20 @@ function App() {
       return;
     }
 
-    if (!userFeedback.title.trim() && !userFeedback.description.trim()) {
-      appendLog("请至少填写返工标题或问题描述。", "warning");
+    if (!userFeedback.message.trim() && !userFeedback.attachments.trim() && !userFeedback.imageAttachments.length) {
+      appendLog("请先描述要修改的问题，或粘贴截图/文件路径。", "warning");
       return;
     }
 
     setSubmittingUserFeedback(true);
+    appendFeedbackMessage("user", "fix", feedbackMessageText(userFeedback));
     appendLog("开始把用户修改要求转成返工任务。", "info");
 
     try {
       const result = await requestUserFeedbackTask({ task, taskPlan, feedback: userFeedback });
       setUserFeedbackResult(result);
+      setSystemQuestionResult(null);
+      appendFeedbackMessage("system", "fix", result.aiReply, `任务：${result.taskId}`);
       if (result.updatedTaskPlan) {
         setTaskPlan(result.updatedTaskPlan);
         setAutoDryRun(null);
@@ -3191,11 +3393,17 @@ function App() {
             </div>
             <UserFeedbackPanel
               feedback={userFeedback}
+              messages={feedbackMessages}
               result={userFeedbackResult}
+              questionResult={systemQuestionResult}
+              asking={askingSystemQuestion}
               submitting={submittingUserFeedback}
               taskPlan={taskPlan}
               onChange={updateUserFeedback}
-              onSubmit={() => void submitUserFeedbackTask()}
+              onAttachImages={(files) => void attachUserFeedbackImages(files)}
+              onRemoveImage={removeUserFeedbackImage}
+              onAskSystem={() => void askSystemAiAboutFeedback()}
+              onSubmitFix={() => void submitUserFeedbackTask()}
             />
             <div className="issue-layout">
               <section className="flat-panel">

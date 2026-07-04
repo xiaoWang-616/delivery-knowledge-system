@@ -13,6 +13,7 @@ const aiProvider = String(process.env.DELIVERY_AI_PROVIDER || "manual").trim().t
 const aiCommand = String(process.env.DELIVERY_AI_COMMAND || "").trim();
 const aiCommandArgs = String(process.env.DELIVERY_AI_ARGS || "").trim();
 const aiCommandTimeoutMs = Math.max(30000, Number(process.env.DELIVERY_AI_TIMEOUT_MS || 10 * 60 * 1000));
+const maxRequestBodyBytes = Math.max(1024 * 1024, Number(process.env.DELIVERY_MAX_REQUEST_BODY_BYTES || 12 * 1024 * 1024));
 const maxRepairRounds = Math.max(1, Number(process.env.DELIVERY_MAX_REPAIR_ROUNDS || 3));
 const maxPreviewItems = 80;
 const ignoredNames = new Set([
@@ -42,7 +43,7 @@ function readBody(request) {
     let body = "";
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 1024 * 1024) {
+      if (body.length > maxRequestBodyBytes) {
         request.destroy();
         reject(new Error("请求体过大"));
       }
@@ -1676,7 +1677,11 @@ function makeTask(id, title, dependsOn, goal, allowedFiles, forbidden, inputs, a
     dependsOn,
     goal,
     allowedFiles,
-    forbidden,
+    forbidden: [
+      ...forbidden,
+      "只能修改用户填写的真实项目路径内文件，不修改模块项目交付系统自身",
+      "不把系统辅助缓存、知识库运行文件或控制台源码写入真实目标项目",
+    ],
     inputs,
     acceptance,
     promptFile: `${id}.prompt.auto.md`,
@@ -3395,14 +3400,136 @@ function createIssueFixTaskFromIssue(payload) {
   };
 }
 
-function normalizeUserFeedback(feedback = {}) {
+function currentTaskFromPlan(taskPlan = {}) {
+  const tasks = Array.isArray(taskPlan.tasks) ? taskPlan.tasks : [];
+  return tasks.find((item) => ["pending", "assigned", "needs-fix", "blocked"].includes(item.status)) || null;
+}
+
+function describeCurrentTask(taskPlan = {}) {
+  const tasks = Array.isArray(taskPlan.tasks) ? taskPlan.tasks : [];
+  if (!tasks.length) {
+    return "现在还没有设计与任务队列，所以系统还没有可派发给写代码 AI 的具体任务。需要先填写任务包并开始交付。";
+  }
+
+  const current = currentTaskFromPlan(taskPlan);
+  const doneCount = tasks.filter((item) => item.status === "done").length;
+  if (!current) {
+    return `任务队列里 ${doneCount}/${tasks.length} 个任务已完成，目前没有待执行任务。如果页面还没达到预期，需要通过这里生成修改任务。`;
+  }
+
+  const statusText = {
+    pending: "等待派发给写代码 AI",
+    assigned: "已经派发，等待写代码 AI 回填报告或等待系统 review",
+    submitted: "已提交，等待 review",
+    reviewed: "已 review，等待推进",
+    "needs-fix": "review 后需要修复",
+    done: "已完成",
+    blocked: "已阻断，需要人工补资料或确认风险",
+  };
+  return `当前卡在 ${current.id}「${current.title}」，状态是“${statusText[current.status] || current.status}”。进度 ${doneCount}/${tasks.length}。当前任务目标：${current.goal || "未记录"}`;
+}
+
+function answerSystemQuestion(payload) {
+  const question = String(payload.question || "").trim();
+  if (!question) {
+    throw new Error("请先输入要问系统 AI 的问题。");
+  }
+
+  const task = payload.task || {};
+  const taskPlan = payload.taskPlan || null;
+  const text = question.toLowerCase();
+  const boundary = [
+    "这里可以询问系统状态、卡住原因、下一步动作，也可以生成目标项目修改任务。",
+    "问系统 AI 是只读回答，不会修改任何代码。",
+    "生成修改任务只允许作用于用户填写的真实项目路径，不能修改模块项目交付系统自身。",
+  ];
+
+  let answer = "";
+  if (/卡住|没写完|为什么|进度|到哪|状态|停住|阻断/.test(text)) {
+    answer = `${describeCurrentTask(taskPlan || {})}\n\n如果你是想让我继续写目标项目代码，请使用“生成修改任务”；如果只是问原因，当前这次回答不会改任何文件。`;
+  } else if (/下一步|接下来|继续|怎么做/.test(text)) {
+    answer = `${describeCurrentTask(taskPlan || {})}\n\n建议下一步：先看当前任务是否 pending 或 assigned。pending 就派发给写代码 AI；assigned 就等待报告并 review；needs-fix 就生成修复任务；没有队列就先开始交付生成设计与任务队列。`;
+  } else if (/改这个系统|修改系统|交付系统|控制台|delivery/.test(text)) {
+    answer = "这个对话入口不能让 AI 修改模块项目交付系统自身。它只能回答系统相关问题，或者把用户指定项目里的问题转成修改任务。如果要改这个交付系统，需要在 Codex 对话里明确让我改系统代码。";
+  } else if (/按钮|入口|怎么用|使用|什么意思/.test(text)) {
+    answer = "这个入口有两个动作：问系统 AI 用来问进度、卡住原因、下一步怎么做；生成修改任务用来把你描述的 bug、样式问题或功能缺口转成目标项目的受控修复任务。图片和路径会作为证据进入任务上下文。";
+  } else {
+    answer = `${describeCurrentTask(taskPlan || {})}\n\n我会按系统状态回答你的问题；如果你要改目标项目，请点“生成修改任务”，系统会把这条消息变成独立 fix task。`;
+  }
+
   return {
-    title: String(feedback.title || "").trim(),
-    description: String(feedback.description || "").trim(),
+    status: "success",
+    question,
+    answer: `项目：${task.projectName || "未填写"}；模块：${task.moduleName || "未填写"}。\n\n${answer}`,
+    boundary,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function normalizeUserFeedback(feedback = {}) {
+  const message = String(feedback.message || "").trim();
+  const attachments = String(feedback.attachments || "").trim();
+  const title = String(feedback.title || "").trim() || message.split("\n").find(Boolean)?.slice(0, 60) || "用户返工要求";
+  const description = String(feedback.description || "").trim() || message;
+  return {
+    message,
+    attachments,
+    imageAttachments: normalizeFeedbackImageAttachments(feedback.imageAttachments),
+    imageFiles: [],
+    title,
+    description,
     expected: String(feedback.expected || "").trim(),
-    evidence: String(feedback.evidence || "").trim(),
+    evidence: [String(feedback.evidence || "").trim(), attachments].filter(Boolean).join("\n"),
     acceptance: String(feedback.acceptance || "").trim(),
   };
+}
+
+function normalizeFeedbackImageAttachments(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => ({
+      id: String(item?.id || "").trim(),
+      name: safeName(item?.name, "feedback-image"),
+      type: String(item?.type || "image/png").trim(),
+      size: Number(item?.size || 0),
+      dataUrl: String(item?.dataUrl || "").trim(),
+    }))
+    .filter((item) => item.dataUrl.startsWith("data:image/") && item.dataUrl.includes(";base64,"))
+    .slice(0, 4);
+}
+
+function imageExtensionFromType(type, name) {
+  const nameMatch = String(name || "").match(/\.([a-z0-9]+)$/i);
+  if (nameMatch?.[1]) return nameMatch[1].toLowerCase();
+  if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
+  if (type.includes("webp")) return "webp";
+  if (type.includes("gif")) return "gif";
+  return "png";
+}
+
+function persistFeedbackImages(imageAttachments, cacheDirectory, feedbackId) {
+  if (!imageAttachments.length) return [];
+  const imageDirectory = join(cacheDirectory, `${feedbackId}-images`);
+  mkdirSync(imageDirectory, { recursive: true });
+
+  return imageAttachments
+    .map((image, index) => {
+      const match = image.dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) return null;
+      const type = match[1];
+      const ext = imageExtensionFromType(type, image.name);
+      const baseName = safeName(image.name.replace(/\.[a-z0-9]+$/i, ""), `image-${index + 1}`);
+      const fileName = `${String(index + 1).padStart(2, "0")}-${baseName}.${ext}`;
+      const filePath = join(imageDirectory, fileName);
+      writeFileSync(filePath, Buffer.from(match[2], "base64"));
+      return {
+        name: image.name,
+        type,
+        size: image.size,
+        path: filePath,
+      };
+    })
+    .filter(Boolean);
 }
 
 function userFeedbackId() {
@@ -3443,6 +3570,7 @@ function createUserFeedbackTaskItem(feedback, tasks, feedbackId) {
       "不修改 allowedFiles 之外的文件",
       "不把接口缺口伪造成前端本地逻辑",
       "不把系统辅助文件写入真实目标项目",
+      "不修改模块项目交付系统自身，只能修用户指定的真实项目",
     ],
     inputs: ["用户返工要求", "写代码AI单任务协议", "task-queue.auto.json", "最近 review 和验收结果", "项目资料包和接口资料"],
     acceptance: acceptance.length
@@ -3466,11 +3594,11 @@ function createUserFeedbackPrompt(feedback, fixTask, task, feedbackId, conversat
 ## 用户返工要求
 
 - 编号：${feedbackId}
-- 标题：${feedback.title || "未填写"}
-- 问题描述：${feedback.description || "未填写"}
-- 期望结果：${feedback.expected || "未填写"}
-- 证据/页面/接口/截图：${feedback.evidence || "未提供"}
-- 验收方式：${feedback.acceptance || "按问题描述和现有验收命令验证"}
+- 用户消息：${feedback.message || feedback.description || "未填写"}
+- 附件/证据：${feedback.evidence || "未提供"}
+- 系统提炼标题：${feedback.title || "未填写"}
+- 显式期望：${feedback.expected || "用户消息中未单独填写，由系统 AI 和写代码 AI 根据上下文提炼"}
+- 验收方式：${feedback.acceptance || "根据用户消息、现有系统验收标准和命令验收判断"}
 
 ## 你的处理步骤
 
@@ -3532,11 +3660,11 @@ function createFeedbackConversationMarkdown({ task, feedback, feedbackId, fixTas
 ## 用户提交
 
 - 编号：${feedbackId}
-- 标题：${feedback.title || "未填写"}
-- 问题描述：${feedback.description || "未填写"}
-- 期望结果：${feedback.expected || "未填写"}
-- 证据：${feedback.evidence || "未提供"}
-- 验收方式：${feedback.acceptance || "未提供"}
+- 用户消息：${feedback.message || feedback.description || "未填写"}
+- 附件/证据：${feedback.evidence || "未提供"}
+- 系统提炼标题：${feedback.title || "未填写"}
+- 显式期望：${feedback.expected || "未单独填写"}
+- 验收方式：${feedback.acceptance || "根据上下文判断"}
 
 ## 系统 AI 回答
 
@@ -3585,8 +3713,8 @@ ${formatList(learning)}
 function createUserFeedbackTaskFromPayload(payload) {
   const task = payload.task || {};
   const feedback = normalizeUserFeedback(payload.feedback);
-  if (!feedback.title && !feedback.description) {
-    throw new Error("请至少填写返工标题或问题描述。");
+  if (!feedback.message && !feedback.description && !feedback.evidence && !feedback.imageAttachments.length) {
+    throw new Error("请先描述要修改的问题，或粘贴截图/文件路径。");
   }
 
   const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
@@ -3595,6 +3723,12 @@ function createUserFeedbackTaskFromPayload(payload) {
   tasks.push(fixTask);
 
   const cacheDirectory = feedbackCacheDirectory(task);
+  const imageFiles = persistFeedbackImages(feedback.imageAttachments, cacheDirectory, feedbackId);
+  feedback.imageFiles = imageFiles;
+  if (imageFiles.length) {
+    const imageEvidence = imageFiles.map((image) => `${image.name}: ${image.path}`).join("\n");
+    feedback.evidence = [feedback.evidence, imageEvidence].filter(Boolean).join("\n");
+  }
   const feedbackFile = join(cacheDirectory, `${feedbackId}.json`);
   const conversationFile = join(cacheDirectory, `${feedbackId}.conversation.md`);
   const knowledgeDirectory = join(dirname(planDirectory), "返工与规则沉淀");
@@ -3610,7 +3744,20 @@ function createUserFeedbackTaskFromPayload(payload) {
 
   writeFileSync(
     feedbackFile,
-    `${JSON.stringify({ feedbackId, task, feedback, fixTask, createdAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        feedbackId,
+        task,
+        feedback: {
+          ...feedback,
+          imageAttachments: feedback.imageAttachments.map(({ id, name, type, size }) => ({ id, name, type, size })),
+        },
+        fixTask,
+        createdAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
   writeFileSync(promptPath, `${createUserFeedbackPrompt(feedback, fixTask, task, feedbackId, conversationFile, knowledgeSuggestionFile).trim()}\n`, "utf8");
@@ -4747,6 +4894,25 @@ const server = createServer(async (request, response) => {
         promptFile: "",
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "问题修复任务生成失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/system-question") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = answerSystemQuestion(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        question: "",
+        answer: "",
+        boundary: [],
+        summary: error instanceof Error ? error.message : "系统 AI 回答失败",
         generatedAt: new Date().toISOString(),
       });
     }
