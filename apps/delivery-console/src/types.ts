@@ -255,6 +255,24 @@ export type IssueFixTaskResult = {
   generatedAt: string;
 };
 
+export type UserFeedbackInput = {
+  title: string;
+  description: string;
+  expected: string;
+  evidence: string;
+  acceptance: string;
+};
+
+export type UserFeedbackTaskResult = IssueFixTaskResult & {
+  feedbackId: string;
+  feedbackFile: string;
+  conversationFile: string;
+  knowledgeSuggestionFile: string;
+  aiReply: string;
+  changedSummary: string;
+  learning: string[];
+};
+
 export type AutoDryRunStep = {
   id: string;
   title: string;
@@ -396,6 +414,7 @@ export type RunRecordSaveResult = {
   runId: string;
   runFile: string;
   latestFile: string;
+  helperDirectory?: string;
   summary: string;
   generatedAt: string;
 };

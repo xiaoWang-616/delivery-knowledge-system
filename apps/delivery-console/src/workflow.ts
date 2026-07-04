@@ -103,7 +103,7 @@ export function evaluateWorkflow(task: DeliveryTask, runtime: RuntimeState, proj
     description: "识别技术栈、路由、接口封装、组件目录、样式入口和测试命令。",
     dependsOn: ["task-package"],
     status: mergeRuntime(projectStatus, runtime["project-scan"]),
-    output: projectScan?.status === "success" ? projectScan.summary : projectStatus === "locked" ? "等待任务包完成" : "可以点击“扫描项目”生成真实项目画像。",
+    output: projectScan?.status === "success" ? projectScan.summary : projectStatus === "locked" ? "等待任务包完成" : "开始交付时会自动读取真实项目结构。",
     issues: projectIssues,
   });
 

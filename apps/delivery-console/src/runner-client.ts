@@ -20,6 +20,8 @@ import type {
   TaskDispatchResult,
   TaskPlanResult,
   TaskReviewResult,
+  UserFeedbackInput,
+  UserFeedbackTaskResult,
   ValidationRunResult,
   WorkflowStep,
 } from "./types";
@@ -334,6 +336,22 @@ export async function createIssueFixTask(payload: {
   });
 
   return readJson<IssueFixTaskResult>(response);
+}
+
+export async function createUserFeedbackTask(payload: {
+  task: DeliveryTask;
+  taskPlan: TaskPlanResult;
+  feedback: UserFeedbackInput;
+}): Promise<UserFeedbackTaskResult> {
+  const response = await fetch(`${runnerBaseUrl}/api/create-user-feedback-task`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson<UserFeedbackTaskResult>(response);
 }
 
 export async function prepareAutoDryRun(payload: {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const port = Number(process.env.DELIVERY_RUNNER_PORT || 5176);
 const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const knowledgeRoot = process.env.DELIVERY_KB_ROOT || join(runnerDirectory, "../../..");
+const helperCacheRoot = join(knowledgeRoot, "项目历史辅助文件");
 const codingAgentProtocolPath = join(knowledgeRoot, "02-模块交付", "写代码AI单任务协议.md");
 const aiProvider = String(process.env.DELIVERY_AI_PROVIDER || "manual").trim().toLowerCase();
 const aiCommand = String(process.env.DELIVERY_AI_COMMAND || "").trim();
@@ -3471,6 +3472,256 @@ function createIssueFixTaskFromIssue(payload) {
   };
 }
 
+function normalizeUserFeedback(feedback = {}) {
+  return {
+    title: String(feedback.title || "").trim(),
+    description: String(feedback.description || "").trim(),
+    expected: String(feedback.expected || "").trim(),
+    evidence: String(feedback.evidence || "").trim(),
+    acceptance: String(feedback.acceptance || "").trim(),
+  };
+}
+
+function userFeedbackId() {
+  return `feedback-${taskIdSegment(timestampForFile(), "feedback")}`;
+}
+
+function nextUserFeedbackTaskId(tasks, feedbackId) {
+  const base = `user-fix-${taskIdSegment(feedbackId, "feedback")}`;
+  if (!tasks.some((item) => item.id === base)) return base;
+  let index = 2;
+  while (tasks.some((item) => item.id === `${base}-${index}`)) {
+    index += 1;
+  }
+  return `${base}-${index}`;
+}
+
+function feedbackCacheDirectory(task) {
+  const moduleName = safeName(task?.moduleName, "未命名模块").replace(/\s+/g, "-");
+  const directory = join(helperCacheRoot, `feedback-${moduleName}-${dateStamp()}`);
+  mkdirSync(directory, { recursive: true });
+  return directory;
+}
+
+function createUserFeedbackTaskItem(feedback, tasks, feedbackId) {
+  const id = nextUserFeedbackTaskId(tasks, feedbackId);
+  const acceptance = formatTaskLines(feedback.acceptance);
+  return {
+    id,
+    title: `返工修复：${feedback.title || feedbackId}`,
+    status: "pending",
+    fixOf: feedbackId,
+    dependsOn: [],
+    goal: `根据用户最新返工要求修复：${feedback.title || feedback.description}。先判断问题原因，再做最小范围修复。`,
+    allowedFiles: collectAllowedFilesFromTasks(tasks),
+    forbidden: [
+      "不重写整个模块",
+      "不扩展到用户未要求的新功能",
+      "不修改 allowedFiles 之外的文件",
+      "不把接口缺口伪造成前端本地逻辑",
+      "不把系统辅助文件写入真实目标项目",
+    ],
+    inputs: ["用户返工要求", "写代码AI单任务协议", "task-queue.auto.json", "最近 review 和验收结果", "项目资料包和接口资料"],
+    acceptance: acceptance.length
+      ? acceptance
+      : ["用户描述的问题已处理或明确标记为接口/资料阻断", "写代码 AI 回答包含问题原因、改动文件、完整改动摘要和验证结果", "系统 review 后可沉淀规则建议"],
+    promptFile: `${id}.prompt.auto.md`,
+  };
+}
+
+function createUserFeedbackPrompt(feedback, fixTask, task, feedbackId, conversationFile, learningFile) {
+  return `# ${fixTask.id} ${fixTask.title}
+
+你是写代码 AI。你现在只处理用户在交付控制台提交的返工要求。不要顺手做其他功能，不要重写整个模块。
+
+## 真实项目
+
+- 项目：${task.projectName || "未命名项目"}
+- 路径：${task.projectPath || "未填写"}
+- 模块：${task.moduleName || "未命名模块"}
+
+## 用户返工要求
+
+- 编号：${feedbackId}
+- 标题：${feedback.title || "未填写"}
+- 问题描述：${feedback.description || "未填写"}
+- 期望结果：${feedback.expected || "未填写"}
+- 证据/页面/接口/截图：${feedback.evidence || "未提供"}
+- 验收方式：${feedback.acceptance || "按问题描述和现有验收命令验证"}
+
+## 你的处理步骤
+
+1. 先判断问题属于代码、接口、资料、样式、测试还是权限问题。
+2. 如果可以修，做最小范围修复。
+3. 如果不能修，不要猜接口、不造假数据，把阻断原因写清楚。
+4. 把完整改动摘要写进完成报告，交还系统 AI review。
+5. 写出“以后不能这么做”的可沉淀规则候选。
+
+## 必须遵守
+
+- ${codingAgentProtocolPath}
+
+## 允许改动范围
+
+${formatList(fixTask.allowedFiles)}
+
+## 禁止事项
+
+${formatList(fixTask.forbidden)}
+
+## 验收标准
+
+${formatList(fixTask.acceptance)}
+
+## 系统记录位置
+
+- 返工对话：${conversationFile}
+- 规则沉淀候选：${learningFile}
+
+## 完成后回报
+
+\`\`\`text
+任务编号：${fixTask.id}
+问题原因判断：
+实际改动文件：
+完整改动摘要：
+运行命令和结果：
+页面/功能验证：
+未完成内容：
+新增问题：
+可沉淀规则候选：
+建议下一步：
+\`\`\`
+`;
+}
+
+function createFeedbackConversationMarkdown({ task, feedback, feedbackId, fixTask, promptFile, aiReply, learning }) {
+  return `# 返工对话：${feedback.title || feedbackId}
+
+> 本文件属于模块项目交付系统的辅助缓存，不写入真实目标项目。
+
+## 模块
+
+- 项目：${task.projectName || "未填写"}
+- 项目路径：${task.projectPath || "未填写"}
+- 模块：${task.moduleName || "未填写"}
+
+## 用户提交
+
+- 编号：${feedbackId}
+- 标题：${feedback.title || "未填写"}
+- 问题描述：${feedback.description || "未填写"}
+- 期望结果：${feedback.expected || "未填写"}
+- 证据：${feedback.evidence || "未提供"}
+- 验收方式：${feedback.acceptance || "未提供"}
+
+## 系统 AI 回答
+
+${aiReply}
+
+## 派发任务
+
+- taskId：${fixTask.id}
+- prompt：${promptFile}
+
+## 规则沉淀候选
+
+${formatList(learning)}
+`;
+}
+
+function createFeedbackLearningMarkdown({ task, feedback, feedbackId, fixTask, learning }) {
+  return `# 用户返工沉淀：${feedback.title || feedbackId}
+
+## 来源
+
+- 项目：${task.projectName || "未填写"}
+- 模块：${task.moduleName || "未填写"}
+- 返工编号：${feedbackId}
+- 修复任务：${fixTask.id}
+
+## 问题
+
+${feedback.description || "未填写"}
+
+## 期望
+
+${feedback.expected || "未填写"}
+
+## 可复用规则候选
+
+${formatList(learning)}
+
+## 后续处理
+
+- 写代码 AI 完成后，将完成报告粘贴到控制台。
+- 系统 AI review 后，决定是否把候选规则提升到通用规则库。
+`;
+}
+
+function createUserFeedbackTaskFromPayload(payload) {
+  const task = payload.task || {};
+  const feedback = normalizeUserFeedback(payload.feedback);
+  if (!feedback.title && !feedback.description) {
+    throw new Error("请至少填写返工标题或问题描述。");
+  }
+
+  const { taskPlan, planDirectory, tasks } = taskPlanStateFromPayload(payload);
+  const feedbackId = userFeedbackId();
+  const fixTask = createUserFeedbackTaskItem(feedback, tasks, feedbackId);
+  tasks.push(fixTask);
+
+  const cacheDirectory = feedbackCacheDirectory(task);
+  const feedbackFile = join(cacheDirectory, `${feedbackId}.json`);
+  const conversationFile = join(cacheDirectory, `${feedbackId}.conversation.md`);
+  const knowledgeDirectory = join(dirname(planDirectory), "返工与规则沉淀");
+  mkdirSync(knowledgeDirectory, { recursive: true });
+  const knowledgeSuggestionFile = join(knowledgeDirectory, `${feedbackId}.learning.auto.md`);
+  const promptPath = join(planDirectory, fixTask.promptFile);
+  const learning = [
+    "用户验收发现的问题必须通过返工入口转成独立 fix task，不应口头修改后丢失上下文。",
+    "写代码 AI 必须说明问题原因、完整改动摘要、验证结果和可沉淀规则候选。",
+    "返工辅助文件只保存在交付系统缓存和知识库，不写入真实目标项目。",
+  ];
+  const aiReply = `系统已记录这次返工要求，并生成受控修复任务 ${fixTask.id}。下一步把该任务派发给写代码 AI；写代码 AI 的回答、改动摘要和验证结果会回到控制台，由系统 AI review 后再沉淀规则。`;
+
+  writeFileSync(
+    feedbackFile,
+    `${JSON.stringify({ feedbackId, task, feedback, fixTask, createdAt: new Date().toISOString() }, null, 2)}\n`,
+    "utf8",
+  );
+  writeFileSync(promptPath, `${createUserFeedbackPrompt(feedback, fixTask, task, feedbackId, conversationFile, knowledgeSuggestionFile).trim()}\n`, "utf8");
+  writeFileSync(
+    conversationFile,
+    `${createFeedbackConversationMarkdown({ task, feedback, feedbackId, fixTask, promptFile: promptPath, aiReply, learning }).trim()}\n`,
+    "utf8",
+  );
+  writeFileSync(
+    knowledgeSuggestionFile,
+    `${createFeedbackLearningMarkdown({ task, feedback, feedbackId, fixTask, learning }).trim()}\n`,
+    "utf8",
+  );
+
+  const nextPlan = writeTaskPlanState(task, taskPlan, tasks, [promptPath, knowledgeSuggestionFile]);
+
+  return {
+    status: "success",
+    taskId: fixTask.id,
+    issueId: feedbackId,
+    feedbackId,
+    promptFile: promptPath,
+    feedbackFile,
+    conversationFile,
+    knowledgeSuggestionFile,
+    aiReply,
+    changedSummary: `已新增返工任务 ${fixTask.id}，等待写代码 AI 执行；当前还没有真实代码改动。`,
+    learning,
+    updatedTaskPlan: nextPlan,
+    summary: `已记录用户返工要求，并生成修复任务：${fixTask.id}。`,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function createReviewFileContent(taskItem, decision, findings, report, nextTaskId, scope) {
   return `# ${taskItem.id} review（自动生成）
 
@@ -4085,11 +4336,72 @@ function writeKnowledge(payload) {
   };
 }
 
-function runDirectoryForRecord(record) {
+function dateStamp(value = new Date()) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function helperRunBaseName(record) {
   const task = record?.task || {};
-  const projectName = safeName(task.projectName || basename(task.projectPath || "项目实例"), "项目实例");
-  const moduleName = safeName(task.moduleName, "未命名模块");
-  return join(knowledgeRoot, "08-项目实例", projectName, moduleName, "runs");
+  const moduleName = safeName(task.moduleName, "未命名模块").replace(/\s+/g, "-");
+  const createdAt = record?.createdAt ? new Date(record.createdAt) : new Date();
+  const stamp = Number.isNaN(createdAt.getTime()) ? dateStamp() : dateStamp(createdAt);
+  return `run-${moduleName}-${stamp}`;
+}
+
+function readHelperRunMeta(directory) {
+  return safeReadJson(join(directory, "run-record.json"));
+}
+
+function runDirectoryForRecord(record) {
+  const baseName = helperRunBaseName(record);
+  mkdirSync(helperCacheRoot, { recursive: true });
+
+  const entries = readdirSync(helperCacheRoot, { withFileTypes: true }).filter(
+    (entry) => entry.isDirectory() && (entry.name === baseName || entry.name.startsWith(`${baseName}-`)),
+  );
+  const existing = entries.find((entry) => {
+    const existingRecord = readHelperRunMeta(join(helperCacheRoot, entry.name));
+    return existingRecord?.runId && existingRecord.runId === record?.runId;
+  });
+  if (existing) {
+    return join(helperCacheRoot, existing.name);
+  }
+
+  let directoryName = baseName;
+  let index = 2;
+  while (existsSync(join(helperCacheRoot, directoryName))) {
+    directoryName = `${baseName}-${index}`;
+    index += 1;
+  }
+
+  return join(helperCacheRoot, directoryName);
+}
+
+function createRunMetaMarkdown(record, runDirectory) {
+  const task = record?.task || {};
+  return `# ${basename(runDirectory)}
+
+> 本目录是模块项目交付系统的本地辅助缓存，不写入用户真实项目，也不提交 Git。
+
+## 基本信息
+
+- runId：${record.runId || "未生成"}
+- 项目：${task.projectName || "未填写"}
+- 项目路径：${task.projectPath || "未填写"}
+- 模块：${task.moduleName || "未填写"}
+- 进度：${record.progress ?? 0}%
+- 创建时间：${record.createdAt || "未知"}
+- 更新时间：${record.updatedAt || "未知"}
+
+## 用途
+
+- 保存系统 AI 本次交付的上下文快照。
+- 后续用户查询某个模块资料时，优先从本目录检索。
+- 如同一模块有多个缓存目录，应按目录名日期和序号让用户选择。
+`;
 }
 
 function saveRunRecord(payload) {
@@ -4102,58 +4414,63 @@ function saveRunRecord(payload) {
     updatedAt: new Date().toISOString(),
   };
   const runFile = join(runDirectory, `${runId}.json`);
-  const latestFile = join(runDirectory, "latest.json");
+  const latestFile = join(runDirectory, "run-record.json");
+  const metaFile = join(runDirectory, "run-meta.md");
 
   mkdirSync(runDirectory, { recursive: true });
   writeFileSync(runFile, `${JSON.stringify(normalizedRecord, null, 2)}\n`, "utf8");
   writeFileSync(latestFile, `${JSON.stringify(normalizedRecord, null, 2)}\n`, "utf8");
+  writeFileSync(metaFile, `${createRunMetaMarkdown(normalizedRecord, runDirectory).trim()}\n`, "utf8");
 
   return {
     status: "success",
     runId,
     runFile,
     latestFile,
+    helperDirectory: runDirectory,
     summary: `运行记录已保存：${runId}`,
     generatedAt: new Date().toISOString(),
   };
 }
 
 function loadRunRecord(query) {
-  const projectName = safeName(query.get("projectName"), "项目实例");
   const moduleName = safeName(query.get("moduleName"), "未命名模块");
   const runId = safeName(query.get("runId"), "latest");
-  const fileName = runId === "latest" ? "latest.json" : `${runId}.json`;
-  const runFile = join(knowledgeRoot, "08-项目实例", projectName, moduleName, "runs", fileName);
+  const candidates = listHelperRunDirectories(moduleName);
+  const target = runId === "latest" ? candidates[0] : candidates.find((item) => item.name === runId || item.record?.runId === runId);
+  const runFile = target ? join(target.directory, "run-record.json") : "";
   const record = safeReadJson(runFile);
   if (!record) {
-    throw new Error(`未找到运行记录：${runFile}`);
+    throw new Error(`未找到模块辅助缓存：${moduleName}${runId === "latest" ? "" : ` / ${runId}`}`);
   }
   return record;
 }
 
-function listRunRecords(query) {
-  const projectName = safeName(query.get("projectName"), "项目实例");
-  const moduleName = safeName(query.get("moduleName"), "未命名模块");
-  const runDirectory = join(knowledgeRoot, "08-项目实例", projectName, moduleName, "runs");
-  if (!existsSync(runDirectory) || !statSync(runDirectory).isDirectory()) {
-    return {
-      status: "success",
-      projectName,
-      moduleName,
-      runs: [],
-      summary: "暂无运行记录。",
-      generatedAt: new Date().toISOString(),
-    };
+function listHelperRunDirectories(moduleName) {
+  const safeModuleName = safeName(moduleName, "未命名模块").replace(/\s+/g, "-");
+  if (!existsSync(helperCacheRoot) || !statSync(helperCacheRoot).isDirectory()) {
+    return [];
   }
 
-  const runs = readdirSync(runDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && entry.name !== "latest.json")
+  return readdirSync(helperCacheRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(`run-${safeModuleName}-`))
     .map((entry) => {
-      const runFile = join(runDirectory, entry.name);
-      const record = safeReadJson(runFile);
+      const directory = join(helperCacheRoot, entry.name);
+      const record = readHelperRunMeta(directory);
+      return { name: entry.name, directory, record };
+    })
+    .sort((left, right) => String(right.record?.updatedAt || right.name).localeCompare(String(left.record?.updatedAt || left.name)));
+}
+
+function listRunRecords(query) {
+  const moduleName = safeName(query.get("moduleName"), "未命名模块");
+  const candidates = listHelperRunDirectories(moduleName);
+  const runs = candidates
+    .map((item) => {
+      const record = item.record;
       if (!record) return null;
       return {
-        runId: record.runId || entry.name.replace(/\.json$/, ""),
+        runId: item.name,
         summary: record.summary || "无摘要",
         progress: Number(record.progress || 0),
         issueCount: Array.isArray(record.issues) ? record.issues.length : 0,
@@ -4161,7 +4478,7 @@ function listRunRecords(query) {
         knowledgeStatus: record.knowledgeWrite?.status || "none",
         createdAt: record.createdAt || "",
         updatedAt: record.updatedAt || "",
-        runFile,
+        runFile: join(item.directory, "run-record.json"),
       };
     })
     .filter(Boolean)
@@ -4169,10 +4486,10 @@ function listRunRecords(query) {
 
   return {
     status: "success",
-    projectName,
+    projectName: "",
     moduleName,
     runs,
-    summary: `已找到 ${runs.length} 条运行记录。`,
+    summary: `已找到 ${runs.length} 个 ${moduleName} 的辅助缓存。`,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -4507,6 +4824,33 @@ const server = createServer(async (request, response) => {
         promptFile: "",
         updatedTaskPlan: null,
         summary: error instanceof Error ? error.message : "问题修复任务生成失败",
+        generatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/api/create-user-feedback-task") {
+    try {
+      const body = await readBody(request);
+      const payload = body ? JSON.parse(body) : {};
+      const result = createUserFeedbackTaskFromPayload(payload);
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        status: "error",
+        taskId: "",
+        issueId: "",
+        feedbackId: "",
+        promptFile: "",
+        feedbackFile: "",
+        conversationFile: "",
+        knowledgeSuggestionFile: "",
+        aiReply: "",
+        changedSummary: "",
+        learning: [],
+        updatedTaskPlan: null,
+        summary: error instanceof Error ? error.message : "用户返工任务生成失败",
         generatedAt: new Date().toISOString(),
       });
     }

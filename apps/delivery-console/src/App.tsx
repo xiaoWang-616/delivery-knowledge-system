@@ -4,13 +4,12 @@ import {
   autoAdvanceOnce as requestAutoAdvanceOnce,
   autoRunUntilPause as requestAutoRunUntilPause,
   createIssueFixTask as requestIssueFixTask,
+  createUserFeedbackTask as requestUserFeedbackTask,
   dispatchTask as requestTaskDispatch,
   finalizeDelivery as requestFinalAcceptance,
   getAiAdapterStatus as requestAiAdapterStatus,
   getSystemHealth as requestSystemHealth,
   loadTaskPlan as requestTaskPlanLoad,
-  listRunRecords as requestRunRecordList,
-  loadRunRecord as requestRunRecordLoad,
   prepareContextPackage as requestContextPackagePrepare,
   prepareAutoDryRun as requestAutoDryRunPrepare,
   prepareExecutionPackage as requestExecutionPackagePrepare,
@@ -55,7 +54,6 @@ import type {
   PermissionKey,
   ProjectScanResult,
   RunLog,
-  RunRecordListItem,
   RunRecordSaveResult,
   RuntimeState,
   StepStatus,
@@ -63,6 +61,8 @@ import type {
   TaskDispatchResult,
   TaskPlanResult,
   TaskReviewResult,
+  UserFeedbackInput,
+  UserFeedbackTaskResult,
   ValidationRunResult,
   WorkflowStep,
 } from "./types";
@@ -126,15 +126,6 @@ const commandStatusText: Record<ValidationRunResult["commands"][number]["status"
   failed: "失败",
   skipped: "跳过",
   timeout: "超时",
-};
-
-const runHistoryStatusText: Record<RunRecordListItem["validationStatus"] | RunRecordListItem["knowledgeStatus"], string> = {
-  success: "通过",
-  failed: "失败",
-  partial: "部分通过",
-  skipped: "跳过",
-  error: "错误",
-  none: "未执行",
 };
 
 const taskQueueStatusText: Record<string, string> = {
@@ -453,7 +444,7 @@ function buildExecutionDecision({
       nextAction: "先补齐项目名称、真实项目路径、模块名称和需求说明。",
       reason: ["任务包的基础信息还不完整，系统 AI 不能稳定生成设计与任务队列。"],
       humanAction: "补齐一次性任务包，并尽量提供接口文档、Demo、旧项目和 PRD。",
-      systemAction: "等待资料完整后扫描项目并生成上下文。",
+      systemAction: "等待资料完整后自动读取项目结构并生成上下文。",
       canAutoProceed: false,
       currentTaskId: null,
       blockers: [],
@@ -467,7 +458,7 @@ function buildExecutionDecision({
       owner: "系统 AI",
       nextAction: "生成 AI 上下文包、交付执行包和设计与任务队列。",
       reason: ["还没有 task-queue，写代码 AI 不应该直接开始写完整模块。"],
-      humanAction: "确认资料路径有效，必要时先点击扫描项目。",
+      humanAction: "确认资料路径有效，然后点击开始交付。",
       systemAction: "读取资料并拆成小任务，每个任务带 allowedFiles 和验收标准。",
       canAutoProceed: true,
       currentTaskId: null,
@@ -823,7 +814,7 @@ function ProjectScanPanel({ scan }: { scan: ProjectScanResult | null }) {
     return (
       <section className="flat-panel scan-panel">
         <h2>项目画像</h2>
-        <p className="empty-text">还没有扫描真实项目。填写项目路径后点击“扫描项目”，这里会显示技术栈、关键目录、规则文件和脚本。</p>
+        <p className="empty-text">还没有读取真实项目。填写项目路径后点击“开始交付”，系统会自动识别技术栈、关键目录、规则文件和脚本。</p>
       </section>
     );
   }
@@ -1166,6 +1157,84 @@ function IssueTable({
         </div>
       ))}
     </div>
+  );
+}
+
+function UserFeedbackPanel({
+  feedback,
+  result,
+  submitting,
+  taskPlan,
+  onChange,
+  onSubmit,
+}: {
+  feedback: UserFeedbackInput;
+  result: UserFeedbackTaskResult | null;
+  submitting: boolean;
+  taskPlan: TaskPlanResult | null;
+  onChange: (key: keyof UserFeedbackInput, value: string) => void;
+  onSubmit: () => void;
+}) {
+  const canSubmit = Boolean(taskPlan && (feedback.title.trim() || feedback.description.trim()));
+
+  return (
+    <section className="flat-panel feedback-panel">
+      <div className="scan-head">
+        <div>
+          <h3>提交修改要求</h3>
+          <p>给系统 AI 留返工入口：它会生成独立 fix task，写代码 AI 的回答、改动摘要和系统 review 会继续沉淀。</p>
+        </div>
+        <button className="primary-button" onClick={onSubmit} disabled={!canSubmit || submitting}>
+          {submitting ? "生成中" : "生成返工任务"}
+        </button>
+      </div>
+
+      <div className="feedback-form-grid">
+        <label>
+          <span>问题标题</span>
+          <TextInput value={feedback.title} onChange={(value) => onChange("title", value)} placeholder="例如 省市区筛选结果为空" />
+        </label>
+        <label>
+          <span>期望结果</span>
+          <TextInput value={feedback.expected} onChange={(value) => onChange("expected", value)} placeholder="例如 选中东城区后列表应显示匹配代理商" />
+        </label>
+        <label>
+          <span>问题描述</span>
+          <TextArea value={feedback.description} onChange={(value) => onChange("description", value)} rows={4} placeholder="说明在哪里出了问题、当前表现是什么。" />
+        </label>
+        <label>
+          <span>证据 / 页面 / 接口</span>
+          <TextArea value={feedback.evidence} onChange={(value) => onChange("evidence", value)} rows={4} placeholder="页面 URL、截图说明、接口路径、控制台报错或参考 Demo。" />
+        </label>
+        <label className="feedback-wide-field">
+          <span>验收方式</span>
+          <TextArea value={feedback.acceptance} onChange={(value) => onChange("acceptance", value)} rows={3} placeholder="修完以后怎么证明正确，例如输入关键词、点击路径、需要通过的命令。" />
+        </label>
+      </div>
+
+      {!taskPlan ? <p className="feedback-warning">需要先生成设计与任务队列，系统才知道把返工任务插到哪里。</p> : null}
+
+      {result ? (
+        <div className="feedback-result">
+          <div>
+            <strong>{result.summary}</strong>
+            <span>任务：{result.taskId}</span>
+          </div>
+          <p>{result.aiReply}</p>
+          <p>{result.changedSummary}</p>
+          <div className="feedback-file-grid">
+            <code>{result.promptFile}</code>
+            <code>{result.conversationFile}</code>
+            <code>{result.knowledgeSuggestionFile}</code>
+          </div>
+          <ul>
+            {result.learning.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1625,9 +1694,9 @@ function MaterialStageGuide({
   const stages: Array<{ title: string; description: string; status: StepStatus; meta: string }> = [
     {
       title: "项目接入",
-      description: "先填写项目名称和真实路径，再扫描项目画像。",
+      description: "填写项目名称和真实路径，开始交付时系统会自动读取项目结构。",
       status: hasText(task.projectPath) && projectScan?.status === "success" ? (projectScan.warnings.length ? "risk" : "done") : hasText(task.projectPath) ? "pending" : "failed",
-      meta: projectScan?.summary || (hasText(task.projectPath) ? "可点击扫描项目" : "等待项目路径"),
+      meta: projectScan?.summary || (hasText(task.projectPath) ? "等待开始交付时自动读取" : "等待项目路径"),
     },
     {
       title: "模块需求",
@@ -1672,40 +1741,6 @@ function MaterialStageGuide({
   );
 }
 
-function RunRecordPanel({
-  runId,
-  result,
-  saving,
-  loading,
-  onSave,
-  onLoad,
-}: {
-  runId: string;
-  result: RunRecordSaveResult | null;
-  saving: boolean;
-  loading: boolean;
-  onSave: () => void;
-  onLoad: () => void;
-}) {
-  return (
-    <section className="run-record-panel">
-      <div>
-        <span>当前运行</span>
-        <strong>{runId}</strong>
-        <small>{result?.summary || "运行状态会保存到知识库 runs 目录。"}</small>
-      </div>
-      <div className="run-record-actions">
-        <button className="secondary-button" onClick={onLoad} disabled={loading}>
-          {loading ? "恢复中" : "恢复最近记录"}
-        </button>
-        <button className="secondary-button" onClick={onSave} disabled={saving}>
-          {saving ? "保存中" : "保存运行记录"}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function SystemHealthPanel({ result }: { result: SystemHealthResult | null }) {
   if (!result) return null;
 
@@ -1734,65 +1769,6 @@ function SystemHealthPanel({ result }: { result: SystemHealthResult | null }) {
   );
 }
 
-function RunHistoryPanel({
-  runs,
-  loading,
-  onRefresh,
-  onRestore,
-}: {
-  runs: RunRecordListItem[];
-  loading: boolean;
-  onRefresh: () => void;
-  onRestore: (runId: string) => void;
-}) {
-  return (
-    <section className="run-history-panel">
-      <div className="run-history-head">
-        <div>
-          <h2>历史运行</h2>
-          <p>按当前项目名称和模块名称读取 runs 目录，支持恢复任意一次历史状态。</p>
-        </div>
-        <button className="secondary-button" onClick={onRefresh} disabled={loading}>
-          {loading ? "读取中" : "刷新历史"}
-        </button>
-      </div>
-      {runs.length ? (
-        <div className="run-history-list">
-          {runs.slice(0, 6).map((item) => (
-            <article className="run-history-card" key={item.runId}>
-              <div className="run-history-card-head">
-                <strong>{item.runId}</strong>
-                <span>{item.progress}%</span>
-              </div>
-              <p>{item.summary}</p>
-              <dl>
-                <div>
-                  <dt>命令</dt>
-                  <dd>{runHistoryStatusText[item.validationStatus]}</dd>
-                </div>
-                <div>
-                  <dt>知识库</dt>
-                  <dd>{runHistoryStatusText[item.knowledgeStatus]}</dd>
-                </div>
-                <div>
-                  <dt>问题</dt>
-                  <dd>{item.issueCount}</dd>
-                </div>
-              </dl>
-              <small>{formatDateTime(item.updatedAt)}</small>
-              <button className="secondary-button" onClick={() => onRestore(item.runId)}>
-                恢复此记录
-              </button>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <p className="empty-text">暂无历史运行。保存运行记录后，这里会出现可恢复的 run。</p>
-      )}
-    </section>
-  );
-}
-
 function ModuleDependencyGraph({
   task,
   projectScan,
@@ -1817,7 +1793,7 @@ function ModuleDependencyGraph({
       title: "项目画像",
       type: "扫描",
       status: projectScan?.status === "success" ? (projectScan.warnings.length ? "risk" : "done") : projectScan ? "failed" : "pending",
-      meta: projectScan?.summary || "等待扫描项目",
+      meta: projectScan?.summary || "等待开始交付时自动读取",
     },
     {
       title: "接口文档",
@@ -1882,6 +1858,16 @@ function ModuleDependencyGraph({
   );
 }
 
+function emptyUserFeedbackInput(): UserFeedbackInput {
+  return {
+    title: "",
+    description: "",
+    expected: "",
+    evidence: "",
+    acceptance: "",
+  };
+}
+
 function App() {
   const [task, setTask] = useState<DeliveryTask>(() => loadTask());
   const [runtime, setRuntime] = useState<RuntimeState>(() => loadRuntime());
@@ -1900,13 +1886,14 @@ function App() {
   const [taskDispatch, setTaskDispatch] = useState<TaskDispatchResult | null>(null);
   const [taskReport, setTaskReport] = useState("");
   const [taskReview, setTaskReview] = useState<TaskReviewResult | null>(null);
+  const [userFeedback, setUserFeedback] = useState<UserFeedbackInput>(() => emptyUserFeedbackInput());
+  const [userFeedbackResult, setUserFeedbackResult] = useState<UserFeedbackTaskResult | null>(null);
   const [pageSmoke, setPageSmoke] = useState<PageSmokeTestResult | null>(null);
   const [validationRun, setValidationRun] = useState<ValidationRunResult | null>(null);
   const [finalAcceptance, setFinalAcceptance] = useState<FinalAcceptanceResult | null>(null);
   const [currentRunId, setCurrentRunId] = useState(() => loadRunId() || createRunId());
   const [runCreatedAt, setRunCreatedAt] = useState(() => new Date().toISOString());
   const [runRecordSave, setRunRecordSave] = useState<RunRecordSaveResult | null>(null);
-  const [runHistory, setRunHistory] = useState<RunRecordListItem[]>([]);
   const [tab, setTab] = useState<TabKey>("task");
   const [copied, setCopied] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -1922,6 +1909,7 @@ function App() {
   const [dispatchingTask, setDispatchingTask] = useState(false);
   const [reviewingTask, setReviewingTask] = useState(false);
   const [creatingIssueFixId, setCreatingIssueFixId] = useState<string | null>(null);
+  const [submittingUserFeedback, setSubmittingUserFeedback] = useState(false);
   const [writingKnowledge, setWritingKnowledge] = useState(false);
   const [runningPageSmoke, setRunningPageSmoke] = useState(false);
   const [runningValidation, setRunningValidation] = useState(false);
@@ -1929,8 +1917,6 @@ function App() {
   const [autoAdvancing, setAutoAdvancing] = useState(false);
   const [autoRunning, setAutoRunning] = useState(false);
   const [savingRunRecord, setSavingRunRecord] = useState(false);
-  const [loadingRunRecord, setLoadingRunRecord] = useState(false);
-  const [loadingRunHistory, setLoadingRunHistory] = useState(false);
   const runTimer = useRef<number | null>(null);
 
   const steps = useMemo(() => evaluateWorkflow(task, runtime, projectScan), [task, runtime, projectScan]);
@@ -2071,7 +2057,6 @@ function App() {
     try {
       const result = await requestRunRecordSave(buildRunRecord(overrides));
       setRunRecordSave(result);
-      void refreshRunHistory(true);
       if (!silent) {
         appendLog(result.summary, "success");
       }
@@ -2087,81 +2072,6 @@ function App() {
     }
   }
 
-  function applyRunRecord(record: DeliveryRunRecord, message: string) {
-    setCurrentRunId(record.runId || createRunId());
-    setRunCreatedAt(record.createdAt || new Date().toISOString());
-    setTask({
-      ...defaultTask,
-      ...(record.task || {}),
-      permissions: {
-        ...defaultTask.permissions,
-        ...((record.task || {}).permissions || {}),
-      },
-    });
-    setRuntime(record.runtime || {});
-    setLogs([createLog(message, "success"), ...(record.logs || [])].slice(0, 80));
-    setProjectScan(record.projectScan || null);
-    setValidationRun(record.validationRun || null);
-    setKnowledgeWrite(record.knowledgeWrite || null);
-    setContextPackage(record.contextPackage || null);
-    setExecutionPackage(record.executionPackage || null);
-    setTaskPlan(record.taskPlan || null);
-    setAutoDryRun(record.autoDryRun || null);
-    setControlledExecution(record.controlledExecution || null);
-    setPageSmoke(record.pageSmoke || null);
-    setFinalAcceptance(record.finalAcceptance || null);
-    setTaskDispatch(null);
-    setTaskReview(null);
-    setAiAdapterRun(null);
-    setTaskReport("");
-    setTab("plan");
-  }
-
-  async function refreshRunHistory(silent = false) {
-    if (!hasText(task.projectName) || !hasText(task.moduleName)) {
-      if (!silent) {
-        appendLog("读取历史运行需要先填写项目名称和模块名称。", "warning");
-        setTab("task");
-      }
-      return;
-    }
-
-    setLoadingRunHistory(true);
-    try {
-      const result = await requestRunRecordList({ projectName: task.projectName, moduleName: task.moduleName });
-      setRunHistory(result.runs);
-      if (!silent) {
-        appendLog(result.summary, "success");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "运行记录恢复失败";
-      if (!silent) {
-        appendLog(message, "error");
-      }
-    } finally {
-      setLoadingRunHistory(false);
-    }
-  }
-
-  async function restoreRunRecord(runId?: string) {
-    if (!hasText(task.projectName) || !hasText(task.moduleName)) {
-      appendLog("恢复运行记录需要先填写项目名称和模块名称。", "warning");
-      setTab("task");
-      return;
-    }
-
-    setLoadingRunRecord(true);
-    try {
-      const record = await requestRunRecordLoad({ projectName: task.projectName, moduleName: task.moduleName, runId });
-      applyRunRecord(record, runId ? `已恢复运行记录：${record.runId}` : `已恢复最近运行记录：${record.runId}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "运行记录恢复失败";
-      appendLog(message, "error");
-    } finally {
-      setLoadingRunRecord(false);
-    }
-  }
-
   function resetAll() {
     if (runTimer.current) {
       window.clearTimeout(runTimer.current);
@@ -2169,7 +2079,7 @@ function App() {
     clearStorage();
     setTask(defaultTask);
     setRuntime({});
-    setLogs([createLog("已重置控制台本地数据。", "warning")]);
+    setLogs([createLog("已新建交付任务，请重新填写一次性任务包。", "warning")]);
     setSystemHealth(null);
     setProjectScan(null);
     setKnowledgeWrite(null);
@@ -2189,21 +2099,21 @@ function App() {
     setCurrentRunId(createRunId());
     setRunCreatedAt(new Date().toISOString());
     setRunRecordSave(null);
-    setRunHistory([]);
     setTab("task");
   }
 
   async function checkSystemHealth() {
     setCheckingHealth(true);
-    appendLog("开始执行系统自检。", "info");
+    appendLog("开始检查系统环境。", "info");
 
     try {
       const result = await requestSystemHealth();
       setSystemHealth(result);
       appendLog(result.summary, result.status === "success" ? "success" : result.status === "warning" ? "warning" : "error");
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统自检失败";
-      setSystemHealth({
+      const failedHealth: SystemHealthResult = {
         status: "error",
         ok: false,
         service: "delivery-runner",
@@ -2219,8 +2129,10 @@ function App() {
         ],
         summary: message,
         generatedAt: new Date().toISOString(),
-      });
+      };
+      setSystemHealth(failedHealth);
       appendLog(message, "error");
+      return failedHealth;
     } finally {
       setCheckingHealth(false);
     }
@@ -2249,6 +2161,7 @@ function App() {
         result.status === "success" ? (result.warnings.length ? "warning" : "success") : "error",
       );
       await saveCurrentRunRecord(true, { projectScan: result, runtime: nextRuntime });
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : "runner 连接失败";
       const failedScan: ProjectScanResult = {
@@ -2272,56 +2185,71 @@ function App() {
       setRuntime(nextRuntime);
       appendLog(`runner 未启动或扫描失败：${message}`, "error");
       await saveCurrentRunRecord(true, { projectScan: failedScan, runtime: nextRuntime });
+      return failedScan;
     } finally {
       setScanning(false);
     }
   }
 
-  function startDryRun() {
+  async function startDelivery() {
     if (runTimer.current) {
       window.clearTimeout(runTimer.current);
     }
 
-    const initialSteps = evaluateWorkflow(task, {}, projectScan);
-    const hasRunnableStep = initialSteps.some((step) => step.status !== "locked" && step.status !== "failed");
-    if (!hasRunnableStep) {
-      appendLog("没有可执行步骤，请先补齐任务包的项目路径、模块名称和需求。", "warning");
+    if (!hasText(task.projectPath) || !hasText(task.moduleName) || !hasText(task.requirement)) {
+      appendLog("请先补齐真实项目路径、模块名称和需求说明。", "warning");
+      setTab("task");
       return;
     }
 
     setTab("plan");
-    setRuntime({});
-    appendLog("启动自动交付演练。当前只演示状态推进，不会写真实项目。", "info");
+    setAutoRunning(true);
+    appendLog("开始交付：系统将自动检查环境、读取项目结构、生成设计与任务队列，并运行到需要人工处理的位置。", "info");
 
-    const runNext = (currentRuntime: RuntimeState) => {
-      const nextSteps = evaluateWorkflow(task, currentRuntime, projectScan);
-      const blockedStep = nextSteps.find((item) => item.status === "failed");
-      if (blockedStep) {
-        appendLog(`自动交付被阻断：${blockedStep.title}。请查看风险归档。`, "error");
+    try {
+      const health = await checkSystemHealth();
+      if (!health?.ok) {
+        appendLog("系统环境检查未通过，已暂停交付。", "error");
         setTab("issues");
         return;
       }
-      const step = nextSteps.find((item) => item.status === "pending" || item.status === "risk");
-      if (!step) {
-        appendLog("自动交付演练完成，已生成交付结果和 Markdown。", "success");
-        setRuntime((current) => ({ ...current, "delivery-complete": "done" }));
-        setTab("result");
+
+      const scan = await scanCurrentProject();
+      if (!scan || scan.status === "error") {
+        appendLog("项目结构读取失败，已暂停交付。", "error");
+        setTab("issues");
         return;
       }
 
-      setRuntime((current) => ({ ...current, [step.id]: "running" }));
-      appendLog(`正在执行：${step.title}`, "info");
+      try {
+        const adapterStatus = await requestAiAdapterStatus();
+        setAiAdapterStatus(adapterStatus);
+      } catch {
+        // Adapter status is helpful but not required for manual mode.
+      }
 
-      runTimer.current = window.setTimeout(() => {
-        const finalStatus: StepStatus = step.issues.length > 0 ? "risk" : "done";
-        const nextRuntime = { ...currentRuntime, [step.id]: finalStatus };
-        setRuntime(nextRuntime);
-        appendLog(`${step.title}：${finalStatus === "risk" ? "完成但有风险" : "完成"}`, finalStatus === "risk" ? "warning" : "success");
-        runTimer.current = window.setTimeout(() => runNext(nextRuntime), 420);
-      }, 520);
-    };
-
-    runNext({});
+      const result = await requestAutoRunUntilPause({
+        task,
+        projectScan: scan,
+        steps,
+        issues,
+        validationRun,
+        pageSmoke,
+        knowledgeWrite,
+        finalAcceptance,
+        taskPlan,
+        markdown,
+        maxSteps: 20,
+      });
+      await applyAutoAdvanceResult(result);
+      setTab(result.status === "blocked" || result.status === "error" ? "issues" : "result");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "开始交付失败";
+      appendLog(message, "error");
+      setTab("issues");
+    } finally {
+      setAutoRunning(false);
+    }
   }
 
   async function copyMarkdown() {
@@ -2762,6 +2690,47 @@ function App() {
     }
   }
 
+  function updateUserFeedback(key: keyof UserFeedbackInput, value: string) {
+    setUserFeedback((current) => ({ ...current, [key]: value }));
+  }
+
+  async function submitUserFeedbackTask() {
+    if (!taskPlan) {
+      appendLog("请先生成设计与任务队列，再提交返工要求。", "warning");
+      setTab("result");
+      return;
+    }
+
+    if (!userFeedback.title.trim() && !userFeedback.description.trim()) {
+      appendLog("请至少填写返工标题或问题描述。", "warning");
+      return;
+    }
+
+    setSubmittingUserFeedback(true);
+    appendLog("开始把用户修改要求转成返工任务。", "info");
+
+    try {
+      const result = await requestUserFeedbackTask({ task, taskPlan, feedback: userFeedback });
+      setUserFeedbackResult(result);
+      if (result.updatedTaskPlan) {
+        setTaskPlan(result.updatedTaskPlan);
+        setAutoDryRun(null);
+        setControlledExecution(null);
+        setTaskDispatch(null);
+        setTaskReport("");
+        await saveCurrentRunRecord(true, { taskPlan: result.updatedTaskPlan, autoDryRun: null, controlledExecution: null });
+      }
+      setUserFeedback(emptyUserFeedbackInput());
+      appendLog(result.summary, "success");
+      setTab("result");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "用户返工任务生成失败";
+      appendLog(message, "error");
+    } finally {
+      setSubmittingUserFeedback(false);
+    }
+  }
+
   async function writeCurrentKnowledge() {
     if (!task.permissions.allowKnowledgeWrite) {
       appendLog("当前没有授权写入知识库。", "warning");
@@ -3117,37 +3086,15 @@ function App() {
           </div>
           <div className="top-actions">
             <button className="secondary-button" onClick={resetAll}>
-              重置
+              新建任务
             </button>
-            <button className="secondary-button" onClick={checkSystemHealth} disabled={checkingHealth}>
-              {checkingHealth ? "自检中" : "系统自检"}
-            </button>
-            <button className="secondary-button" onClick={scanCurrentProject} disabled={scanning}>
-              {scanning ? "扫描中" : "扫描项目"}
-            </button>
-            <button className="primary-button" onClick={startDryRun}>
-              启动交付演练
+            <button className="primary-button" onClick={startDelivery} disabled={autoRunning || checkingHealth || scanning}>
+              {autoRunning || checkingHealth || scanning ? "交付中" : "开始交付"}
             </button>
           </div>
         </header>
 
         <SystemHealthPanel result={systemHealth} />
-
-        <RunRecordPanel
-          runId={currentRunId}
-          result={runRecordSave}
-          saving={savingRunRecord}
-          loading={loadingRunRecord}
-          onSave={() => void saveCurrentRunRecord(false)}
-          onLoad={() => void restoreRunRecord()}
-        />
-
-        <RunHistoryPanel
-          runs={runHistory}
-          loading={loadingRunHistory}
-          onRefresh={() => void refreshRunHistory(false)}
-          onRestore={(runId) => void restoreRunRecord(runId)}
-        />
 
         {tab === "task" ? (
           <section className="content-section">
@@ -3273,6 +3220,14 @@ function App() {
                 <p>默认不中断自动交付。只有无法继续、会破坏项目或权限不足的 P0 才阻断。</p>
               </div>
             </div>
+            <UserFeedbackPanel
+              feedback={userFeedback}
+              result={userFeedbackResult}
+              submitting={submittingUserFeedback}
+              taskPlan={taskPlan}
+              onChange={updateUserFeedback}
+              onSubmit={() => void submitUserFeedbackTask()}
+            />
             <div className="issue-layout">
               <section className="flat-panel">
                 <h3>阻断问题</h3>
@@ -3331,7 +3286,7 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <p className="empty-text">还没有运行日志。点击“启动交付演练”后会记录状态。</p>
+                <p className="empty-text">还没有运行日志。点击“开始交付”后会记录系统执行状态。</p>
               )}
             </section>
           </section>

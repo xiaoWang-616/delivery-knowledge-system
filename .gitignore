@@ -33,3 +33,6 @@ yarn-error.log*
 
 # Generated run records are local execution history by default
 08-项目实例/**/runs/
+
+# Local project helper cache, never commit generated AI delivery snapshots
+项目历史辅助文件/
