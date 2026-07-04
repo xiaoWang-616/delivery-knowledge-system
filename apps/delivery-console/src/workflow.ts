@@ -61,7 +61,6 @@ export function evaluateWorkflow(task: DeliveryTask, runtime: RuntimeState, proj
   const steps: WorkflowStep[] = [];
   const apiDocs = listLines(task.apiDocs);
   const demos = listLines(task.demos);
-  const oldProjects = listLines(task.oldProjects);
   const prds = listLines(task.prds);
 
   const taskIssues: DeliveryIssue[] = [];
@@ -196,7 +195,7 @@ export function evaluateWorkflow(task: DeliveryTask, runtime: RuntimeState, proj
   steps.push({
     id: "test-running",
     title: "测试执行",
-    description: "执行类型检查、lint、build、页面点测、接口和样式验收。",
+    description: "执行类型检查、lint、build，并生成接口、功能和样式验收标准。",
     dependsOn: ["code-development"],
     status: mergeRuntime(testStatus, runtime["test-running"]),
     output: task.permissions.allowRunCommands ? "已授权执行命令。" : "命令执行未授权，记录为风险。",
@@ -221,9 +220,6 @@ export function evaluateWorkflow(task: DeliveryTask, runtime: RuntimeState, proj
   const knowledgeIssues: DeliveryIssue[] = [];
   if (!task.permissions.allowKnowledgeWrite) {
     knowledgeIssues.push(issue("K-PERM", "P1", "未授权写知识库", "可生成沉淀预览，但不会自动写入 Markdown。", "用户", true));
-  }
-  if (oldProjects.length > 0 && demos.length === 0) {
-    knowledgeIssues.push(issue("K-STYLE", "P2", "旧项目参考优先级待确认", "有旧项目但没有 Demo，样式优先级需要在沉淀中标注。", "设计", true));
   }
   const knowledgeStatus = hasDoneOrRisk(steps[8]) ? statusFromIssues(true, knowledgeIssues) : "locked";
   steps.push({

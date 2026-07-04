@@ -11,10 +11,7 @@ export type DeliveryTask = {
   requirement: string;
   apiDocs: string;
   demos: string;
-  oldProjects: string;
   prds: string;
-  pageUrl: string;
-  smokeKeywords: string;
   permissions: Record<PermissionKey, boolean>;
 };
 
@@ -97,7 +94,7 @@ export type KnowledgeWriteResult = {
 };
 
 export type ContextSourceSummary = {
-  type: "api" | "demo" | "oldProject" | "prd";
+  type: "api" | "demo" | "prd";
   source: string;
   status: "read" | "missing" | "external" | "skipped";
   fileCount: number;

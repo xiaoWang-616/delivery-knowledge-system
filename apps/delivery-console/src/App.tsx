@@ -310,7 +310,7 @@ function deliveryRuntimeIssues({
       runtimeIssue(
         "PAGE-SMOKE",
         pageSmoke.status === "error" || pageSmoke.status === "failed" ? "P1" : "P2",
-        "轻量页面点测未完全通过",
+        "系统验收标准未完全通过",
         pageSmoke.summary,
         "测试",
         true,
@@ -352,7 +352,7 @@ function issueRuleSuggestions(issues: DeliveryIssue[]) {
     suggestions.add("命令验收失败要沉淀失败命令、失败原因和修复任务，不要跳过 typecheck/lint/build。");
   }
   if (issues.some((item) => item.id === "PAGE-SMOKE")) {
-    suggestions.add("页面点测失败先沉淀 URL、缺失关键词和错误文本，再生成修复任务，避免凭感觉改页面。");
+    suggestions.add("验收失败先沉淀验收项、证据和失败原因，再生成修复任务，避免凭感觉改页面。");
   }
   if (issues.some((item) => item.id === "KNOWLEDGE-WRITE")) {
     suggestions.add("知识库写入失败不影响代码修复，但不能视为交付闭环完成。");
@@ -387,8 +387,8 @@ function deliveryNextAction({
   if (!taskPlan.tasks.every((item) => item.status === "done")) return "继续派发下一个可执行任务。";
   if (!validationRun) return "任务队列已完成，下一步执行命令验收。";
   if (validationRun.status !== "success") return "命令验收未通过，先根据失败命令生成修复任务。";
-  if (!pageSmoke) return "命令验收已通过，下一步执行轻量页面点测。";
-  if (pageSmoke.status === "failed" || pageSmoke.status === "error") return "页面点测未通过，先记录问题并生成修复任务。";
+  if (!pageSmoke) return "命令验收已通过，下一步生成系统验收标准。";
+  if (pageSmoke.status === "failed" || pageSmoke.status === "error") return "系统验收标准未通过，先记录问题并生成修复任务。";
   if (knowledgeWrite?.status !== "success") return "命令验收已通过，下一步写入知识库。";
   if (!finalAcceptance) return "知识沉淀已完成，下一步生成总验收。";
   if (finalAcceptance.status === "success") return "交付闭环已完成，可以提交代码或进入下一个模块。";
@@ -443,7 +443,7 @@ function buildExecutionDecision({
       owner: "用户",
       nextAction: "先补齐项目名称、真实项目路径、模块名称和需求说明。",
       reason: ["任务包的基础信息还不完整，系统 AI 不能稳定生成设计与任务队列。"],
-      humanAction: "补齐一次性任务包，并尽量提供接口文档、Demo、旧项目和 PRD。",
+      humanAction: "补齐一次性任务包，并尽量提供接口文档、Demo / 设计图和 PRD。",
       systemAction: "等待资料完整后自动读取项目结构并生成上下文。",
       canAutoProceed: false,
       currentTaskId: null,
@@ -609,14 +609,14 @@ function buildExecutionDecision({
 
   if (!pageSmoke) {
     return {
-      phase: "页面点测",
+      phase: "验收标准",
       status: "pending",
       owner: "测试",
-      nextAction: "执行轻量页面点测。",
-      reason: ["命令验收已通过，但页面 URL、关键词和明显错误文本还没有检查。"],
-      humanAction: "确认任务包里的页面点测 URL 和关键词是否准确。",
-      systemAction: "请求页面并检查 HTTP、标题、关键词和常见错误文本。",
-      canAutoProceed: Boolean(task.pageUrl && task.permissions.allowRunCommands),
+      nextAction: "生成系统验收标准。",
+      reason: ["命令验收已通过，但系统还没有把需求、接口、Demo 和项目结构整理成验收标准。"],
+      humanAction: "查看系统生成的验收标准，必要时通过返工入口补充问题。",
+      systemAction: "根据需求、接口资料、Demo 和项目扫描结果生成验收标准。",
+      canAutoProceed: task.permissions.allowRunCommands,
       currentTaskId: null,
       blockers: [],
     };
@@ -624,13 +624,13 @@ function buildExecutionDecision({
 
   if (pageSmoke.status === "failed" || pageSmoke.status === "error") {
     return {
-      phase: "页面修复",
+      phase: "验收修复",
       status: "risk",
       owner: "系统 AI",
-      nextAction: "根据页面点测失败结果生成修复任务。",
+      nextAction: "根据验收标准或页面检查结果生成修复任务。",
       reason: [pageSmoke.summary],
-      humanAction: "确认缺失关键词是否为真实问题，或更新点测关键词。",
-      systemAction: "把 URL、HTTP 状态、缺失关键词和错误文本沉淀到问题池。",
+      humanAction: "确认验收失败是否为真实问题，再提交修改要求或生成修复任务。",
+      systemAction: "把验收失败、缺口和证据沉淀到问题池。",
       canAutoProceed: task.permissions.allowAutoFix,
       currentTaskId: null,
       blockers: [],
@@ -643,7 +643,7 @@ function buildExecutionDecision({
       status: knowledgeWrite ? "risk" : "pending",
       owner: "系统 AI",
       nextAction: "写入知识库，沉淀项目实例、问题和验收记录。",
-      reason: [knowledgeWrite?.summary || "任务、命令和页面点测已有结果，但知识库还没有完整记录。"],
+      reason: [knowledgeWrite?.summary || "任务、命令和验收标准已有结果，但知识库还没有完整记录。"],
       humanAction: "确认允许写入知识库目录。",
       systemAction: "写入模块资料包、问题追踪、测试用例、验收报告和交付报告。",
       canAutoProceed: task.permissions.allowKnowledgeWrite,
@@ -658,7 +658,7 @@ function buildExecutionDecision({
       status: "pending",
       owner: "系统 AI",
       nextAction: "生成总验收和规则沉淀候选。",
-      reason: ["任务、命令、页面点测和知识沉淀已有结果，但还没有最终收口文件。"],
+      reason: ["任务、命令、验收标准和知识沉淀已有结果，但还没有最终收口文件。"],
       humanAction: "确认问题池中是否有需要人工解释的问题。",
       systemAction: "生成 final-acceptance.auto.md 和规则沉淀候选.auto.md。",
       canAutoProceed: true,
@@ -1018,10 +1018,10 @@ function DeliveryControlPanel({
       detail: validationRun?.summary || "等待执行 typecheck / lint / build",
     },
     {
-      title: "页面点测",
+      title: "验收标准",
       status: pageSmokePanelStatus(pageSmoke),
       meta: pageSmoke ? pageSmoke.status : "未执行",
-      detail: pageSmoke?.summary || "等待轻量检查页面 URL、标题、关键词和错误文本",
+      detail: pageSmoke?.summary || "等待系统根据资料生成验收标准",
     },
     {
       title: "知识沉淀",
@@ -1621,8 +1621,8 @@ function PageSmokePanel({ result }: { result: PageSmokeTestResult | null }) {
   if (!result) {
     return (
       <section className="flat-panel page-smoke-panel">
-        <h2>轻量页面点测</h2>
-        <p className="empty-text">还没有执行页面点测。填写页面 URL 和关键词后，可检查页面是否可访问、关键词是否出现、是否有明显错误文本。</p>
+        <h2>系统验收标准</h2>
+        <p className="empty-text">还没有生成验收标准。系统会根据需求、接口资料、Demo 和项目扫描结果自动整理，不需要手填页面地址或关键词。</p>
       </section>
     );
   }
@@ -1633,7 +1633,7 @@ function PageSmokePanel({ result }: { result: PageSmokeTestResult | null }) {
     <section className="flat-panel page-smoke-panel">
       <div className="scan-head">
         <div>
-          <h2>轻量页面点测</h2>
+          <h2>系统验收标准</h2>
           <p>{result.summary}</p>
         </div>
         <StatusBadge status={panelStatus} />
@@ -1641,12 +1641,12 @@ function PageSmokePanel({ result }: { result: PageSmokeTestResult | null }) {
       <div className="validation-meta">
         <span>状态：{result.status}</span>
         <span>HTTP：{result.httpStatus ?? "-"}</span>
-        <span>HTML：{result.bodyLength}</span>
+        <span>标准：{result.checkedKeywords.length} 条</span>
         <span>时间：{formatDateTime(result.generatedAt)}</span>
       </div>
       <div className="page-smoke-summary">
-        <strong>{result.title || "未识别标题"}</strong>
-        <code>{result.url || "未提供 URL"}</code>
+        <strong>{result.title || "系统生成验收标准"}</strong>
+        <code>{result.url || "页面入口由系统后续从项目路由识别"}</code>
       </div>
       <div className="command-list">
         {result.checks.map((item) => (
@@ -1664,11 +1664,11 @@ function PageSmokePanel({ result }: { result: PageSmokeTestResult | null }) {
       {result.missingKeywords.length || result.detectedErrors.length ? (
         <div className="smoke-warning-grid">
           <article>
-            <strong>缺失关键词</strong>
+            <strong>待补验收项</strong>
             <span>{result.missingKeywords.length ? result.missingKeywords.join("、") : "无"}</span>
           </article>
           <article>
-            <strong>错误文本</strong>
+            <strong>明显错误</strong>
             <span>{result.detectedErrors.length ? result.detectedErrors.join("、") : "无"}</span>
           </article>
         </div>
@@ -1712,9 +1712,9 @@ function MaterialStageGuide({
     },
     {
       title: "样式资料",
-      description: "Demo 优先，其次旧项目样式，避免只凭感觉写 UI。",
-      status: lineCount(task.demos) > 0 ? "done" : lineCount(task.oldProjects) > 0 ? "risk" : "pending",
-      meta: lineCount(task.demos) > 0 ? `${lineCount(task.demos)} 个 Demo` : lineCount(task.oldProjects) > 0 ? "仅有旧项目参考" : "等待 Demo 或设计图",
+      description: "Demo / 设计图优先；缺失时按目标项目已有风格生成。",
+      status: lineCount(task.demos) > 0 ? "done" : "pending",
+      meta: lineCount(task.demos) > 0 ? `${lineCount(task.demos)} 个 Demo` : "等待 Demo / 设计图或使用项目现有风格",
     },
     {
       title: "验收沉淀",
@@ -1806,12 +1806,6 @@ function ModuleDependencyGraph({
       type: "资料",
       status: lineCount(task.demos) ? "done" : "pending",
       meta: lineCount(task.demos) ? `${lineCount(task.demos)} 个` : "等待补充",
-    },
-    {
-      title: "旧项目参考",
-      type: "参考",
-      status: lineCount(task.oldProjects) ? "done" : "pending",
-      meta: lineCount(task.oldProjects) ? `${lineCount(task.oldProjects)} 个` : "可选",
     },
     {
       title: "模块计划",
@@ -2820,17 +2814,12 @@ function App() {
 
   async function runCurrentPageSmoke() {
     if (!task.permissions.allowRunCommands) {
-      appendLog("当前没有授权运行点测。", "warning");
-      return;
-    }
-    if (!task.pageUrl.trim()) {
-      appendLog("请先在任务包里填写页面点测 URL。", "warning");
-      setTab("task");
+      appendLog("当前没有授权生成验收记录。", "warning");
       return;
     }
 
     setRunningPageSmoke(true);
-    appendLog(`开始轻量页面点测：${task.pageUrl}`, "info");
+    appendLog("开始生成系统验收标准。", "info");
 
     try {
       const result = await requestPageSmokeTest({ task, projectScan, taskPlan });
@@ -2845,10 +2834,10 @@ function App() {
       );
       await saveCurrentRunRecord(true, { pageSmoke: result });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "页面点测执行失败";
+      const message = error instanceof Error ? error.message : "系统验收标准生成失败";
       const failedSmoke: PageSmokeTestResult = {
         status: "error",
-        url: task.pageUrl,
+        url: "",
         httpStatus: null,
         title: "",
         bodyLength: 0,
@@ -3150,28 +3139,8 @@ function App() {
                 />
               </div>
               <div className="field">
-                <FieldLabel title="旧项目参考" hint="只能参考样式和交互，不能当接口真相" />
-                <TextArea
-                  value={task.oldProjects}
-                  onChange={(value) => updateTask("oldProjects", value)}
-                  placeholder="/Users/wangxiaoyu/Desktop/object/gil-business-web-old/gil-business-web"
-                />
-              </div>
-              <div className="field">
                 <FieldLabel title="PRD / 需求资料" hint="一行一个路径或链接" />
                 <TextArea value={task.prds} onChange={(value) => updateTask("prds", value)} placeholder="飞书文档、本地 Markdown、截图说明。" />
-              </div>
-              <div className="field">
-                <FieldLabel title="页面点测 URL" hint="本地或测试环境页面地址" />
-                <TextInput value={task.pageUrl} onChange={(value) => updateTask("pageUrl", value)} placeholder="http://localhost:1688/agent-list" />
-              </div>
-              <div className="field">
-                <FieldLabel title="点测关键词" hint="一行一个页面应出现的文本" />
-                <TextArea
-                  value={task.smokeKeywords}
-                  onChange={(value) => updateTask("smokeKeywords", value)}
-                  placeholder="模块标题&#10;关键按钮&#10;表格列名"
-                />
               </div>
             </div>
 
@@ -3322,7 +3291,7 @@ function App() {
                   {runningValidation ? "验收中" : "执行命令验收"}
                 </button>
                 <button className="secondary-button" onClick={runCurrentPageSmoke} disabled={runningPageSmoke}>
-                  {runningPageSmoke ? "点测中" : "轻量页面点测"}
+                  {runningPageSmoke ? "生成中" : "生成验收标准"}
                 </button>
                 <button className="secondary-button" onClick={writeCurrentKnowledge} disabled={writingKnowledge}>
                   {writingKnowledge ? "写入中" : "写入知识库"}

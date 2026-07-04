@@ -13,10 +13,7 @@ export const defaultTask: DeliveryTask = {
   requirement: "",
   apiDocs: "",
   demos: "",
-  oldProjects: "",
   prds: "",
-  pageUrl: "",
-  smokeKeywords: "",
   permissions: {
     allowWriteCode: true,
     allowRunCommands: true,

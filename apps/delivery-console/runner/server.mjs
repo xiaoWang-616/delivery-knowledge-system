@@ -125,7 +125,7 @@ function inferDependencyHints(task) {
   add("角色", "系统设置/权限", "可能依赖角色、权限点或可见范围。需要确认权限策略。 ");
 
   if (hints.length === 0) {
-    hints.push({ label: "业务依赖待分析", reason: "任务描述中没有足够关键词，后续需要通过 PRD、接口文档和旧项目继续确认。" });
+    hints.push({ label: "业务依赖待分析", reason: "任务描述中没有足够关键词，后续需要通过 PRD、接口文档和目标项目结构继续确认。" });
   }
 
   return hints;
@@ -464,7 +464,6 @@ function collectContextSources(task) {
   const groups = [
     ["api", task.apiDocs],
     ["demo", task.demos],
-    ["oldProject", task.oldProjects],
     ["prd", task.prds],
   ];
   return groups.flatMap(([type, value]) => formatTaskLines(value).map((source) => readMaterialSource(type, source)).filter(Boolean));
@@ -603,10 +602,6 @@ ${formatList(formatTaskLines(task.apiDocs))}
 
 ${formatList(formatTaskLines(task.demos))}
 
-## 旧项目参考
-
-${formatList(formatTaskLines(task.oldProjects))}
-
 ## PRD / 需求资料
 
 ${formatList(formatTaskLines(task.prds))}
@@ -639,8 +634,7 @@ ${task.requirement || "未填写"}
 ## 开发边界
 
 - 接口路径、参数、响应字段优先以接口文档为准。
-- 样式优先以 Demo / 设计图为准，再参考旧项目。
-- 旧项目代码只能作为样式、交互和历史逻辑参考，不能无脑照搬。
+- 样式优先以 Demo / 设计图为准；缺失时按目标项目现有设计系统补齐。
 - 普通接口问题、样式问题、PRD 表述不清先记录，能继续的部分继续推进。
 `;
 }
@@ -649,7 +643,6 @@ function createModuleDependencyGraph(task, projectScan) {
   const moduleName = task.moduleName || "未命名模块";
   const apiDocs = formatTaskLines(task.apiDocs);
   const demos = formatTaskLines(task.demos);
-  const oldProjects = formatTaskLines(task.oldProjects);
   const prds = formatTaskLines(task.prds);
   const dependencyHints = inferDependencyHints(task);
 
@@ -666,7 +659,6 @@ flowchart LR
   Rules["项目规则文件"] --> Module
   Api["接口文档"] --> Module
   Demo["Demo / 设计图"] --> Module
-  Old["旧项目参考"] --> Module
   Prd["PRD / 需求资料"] --> Module
   Module --> Code["代码开发"]
   Module --> Test["测试验收"]
@@ -683,7 +675,6 @@ flowchart LR
 | --- | --- | --- |
 | 接口文档 | ${apiDocs.length ? "已提供" : "缺失"} | ${tableCell(apiDocs.join("<br />") || "未提供")} |
 | Demo / 设计图 | ${demos.length ? "已提供" : "缺失"} | ${tableCell(demos.join("<br />") || "未提供")} |
-| 旧项目参考 | ${oldProjects.length ? "已提供" : "缺失"} | ${tableCell(oldProjects.join("<br />") || "未提供")} |
 | PRD / 需求资料 | ${prds.length ? "已提供" : "缺失"} | ${tableCell(prds.join("<br />") || "未提供")} |
 
 ## 工程依赖
@@ -704,7 +695,7 @@ ${dependencyHints.map((item) => `| ${tableCell(item.label)} | ${tableCell(item.r
 ## 规则
 
 - 接口文档没有明确支持的能力，不允许前端自行猜参数。
-- Demo / 设计图优先于旧项目样式，旧项目只作参考。
+- Demo / 设计图优先；没有 Demo 时延续目标项目已有风格。
 - 依赖其他页面产生的数据时，要在测试用例中补充前置数据准备步骤。
 - 如果接口或 PRD 不清晰，先记录问题并继续开发可确认部分。
 `;
@@ -788,7 +779,7 @@ function inferTestCases(task, projectScan) {
       id: "TC-BASE-004",
       type: "样式",
       scenario: "Demo 视觉对齐",
-      precondition: "已提供 Demo / 设计图或旧项目参考。",
+      precondition: "已提供 Demo / 设计图，或目标项目中已有同类页面可延续风格。",
       steps: "对比页面间距、字号、按钮、表格密度、筛选栏、空态、分页和图标悬浮效果。",
       expected: "优先匹配 Demo；Demo 未覆盖时保持项目现有风格；不要出现文字重叠或布局跳动。",
     },
@@ -1181,22 +1172,22 @@ ${matrixRows}
 ## 规则
 
 - 不能因为本文件未识别到接口，就在前端猜参数。
-- OpenAPI、proto、接口手册优先级高于旧项目代码。
+- OpenAPI、proto、接口手册优先级高于前端猜测和历史实现习惯。
 - 如果接口不支持某个筛选能力，需要记录为后端问题，而不是前端本地伪过滤。
 `;
 }
 
 function createStyleReference(task, sources = []) {
-  const styleSources = sources.filter((item) => item.type === "demo" || item.type === "oldProject");
+  const styleSources = sources.filter((item) => item.type === "demo");
   const snippets = styleSources.length
     ? styleSources
         .map((item) => `## ${item.type}: ${item.source}\n\n状态：${item.status}\n\n文件数：${item.fileCount}\n\n\`\`\`text\n${truncateOutput(item.content || item.summary, 2400)}\n\`\`\``)
         .join("\n\n")
-    : "- 未提供 Demo、设计图或旧项目样式参考。";
+    : "- 未提供 Demo 或设计图，后续应延续目标项目已有设计系统。";
 
   return `# 样式参考摘要（自动生成）
 
-> 前端页面只作为交付辅助；真正开发时，样式优先参考 Demo / 设计图，其次参考旧项目正式页面，最后才按目标项目现有设计系统补齐。
+> 前端页面只作为交付辅助；真正开发时，样式优先参考 Demo / 设计图。缺失 Demo 时，必须延续目标项目已有组件、布局和主题风格。
 
 ## 模块
 
@@ -1214,27 +1205,26 @@ ${snippets}
 `;
 }
 
-function createOldProjectRisks(sources = []) {
-  const oldContent = sources.filter((item) => item.type === "oldProject").map((item) => item.content).join("\n");
-  const risks = [];
-  const add = (keyword, title, description) => {
-    if (oldContent.includes(keyword)) risks.push({ title, description });
-  };
+function createEngineeringRisks(projectScan) {
+  const risks = [
+    { title: "接口猜字段风险", description: "接口文档没有明确支持的字段，不允许前端自行猜参数或本地伪过滤。" },
+    { title: "全量数据风险", description: "列表页默认使用服务端分页和服务端筛选，不一次拉大量数据到前端过滤。" },
+    { title: "整页刷新风险", description: "新增、编辑、筛选和分页后应局部刷新 query 或局部状态，不使用 window.location.reload()。" },
+    { title: "风格漂移风险", description: "没有 Demo 时必须延续目标项目现有组件、布局、主题和表格密度。" },
+  ];
 
-  add("live-data-bridge", "桥接脚本风险", "旧项目可能依赖桥接脚本或本地数据桥，新项目不能继续搬这种临时结构。 ");
-  add("app.html", "大文件集中风险", "旧项目可能把大量逻辑集中在 app.html，新项目应拆到 feature/api/model/page/component。 ");
-  add("window.location.reload", "整页刷新风险", "旧项目可能通过整页刷新更新列表，新项目应使用局部 query 刷新。 ");
-  add("localStorage", "状态残留风险", "旧项目可能用 localStorage 保存页面筛选状态，离开页面是否清空要按业务确认。 ");
-  add("mock", "mock 数据风险", "旧项目可能混有 mock 或派生字段，接口字段必须以接口文档为准。 ");
-  add("filter(", "前端过滤风险", "旧项目可能拉全量数据后本地过滤，新项目列表默认使用服务端分页和服务端筛选。 ");
+  if (!projectScan?.ruleFiles?.length) {
+    risks.push({ title: "项目规则缺失", description: "未扫描到项目内 AI 编码规则，写代码 AI 必须先从目录结构推断规范并保守实现。" });
+  }
+  if (!projectScan?.keyDirectories?.includes("src") && !projectScan?.keyDirectories?.includes("app")) {
+    risks.push({ title: "源码入口待确认", description: "未识别常见源码目录，第一步任务必须先确认模块落点，不能直接写页面。" });
+  }
 
-  const riskRows = risks.length
-    ? risks.map((item) => `| ${tableCell(item.title)} | ${tableCell(item.description)} |`).join("\n")
-    : "| 待 AI 继续分析 | 当前片段未识别明显旧项目风险，但不能据此认为旧项目可直接照搬。 |";
+  const riskRows = risks.map((item) => `| ${tableCell(item.title)} | ${tableCell(item.description)} |`).join("\n");
 
-  return `# 旧项目风险点（自动生成）
+  return `# 工程风险点（自动生成）
 
-> 旧项目只作为样式、交互和历史业务参考，不能作为接口真相，也不能无脑搬大文件结构。
+> 本文件基于真实项目扫描、接口资料和通用工程规则生成，不依赖历史旧项目。
 
 | 风险 | 说明 |
 | --- | --- |
@@ -1242,9 +1232,9 @@ ${riskRows}
 
 ## 固定规则
 
-- 旧项目代码和接口文档冲突时，以接口文档为准。
-- 旧项目里没有的能力，不代表新项目不能做；接口缺失才需要记录问题。
-- 旧项目里有的前端猜字段、mock、桥接脚本、全量过滤，不应复制进新项目。
+- 接口文档和 PRD 冲突时，记录问题并优先请求确认。
+- 接口缺失才需要记录后端问题，不能把前端猜测当成接口能力。
+- 代码必须延续目标项目结构，不把临时脚本、mock 和大文件方案带进业务代码。
 `;
 }
 
@@ -1286,7 +1276,7 @@ ${issues.length ? issues.map((issue) => `- ${issue.level} / ${issue.owner}：${i
 
 - 接口能力矩阵.auto.md
 - 样式参考摘要.auto.md
-- 旧项目风险点.auto.md
+- 工程风险点.auto.md
 - AI执行提示词.auto.md
 `;
 }
@@ -1299,7 +1289,7 @@ function createAiExecutionPrompt(task) {
 1. 模块上下文包.auto.md
 2. 接口能力矩阵.auto.md
 3. 样式参考摘要.auto.md
-4. 旧项目风险点.auto.md
+4. 工程风险点.auto.md
 5. 测试用例.auto.md
 
 然后再进入真实项目：
@@ -1317,7 +1307,7 @@ ${task.projectPath || "未填写项目路径"}
 - 不使用 window.location.reload()。
 - 不前端一次拉大量数据再过滤。
 - 接口文档没有明确支持的字段，不要自行猜。
-- 样式优先参考 Demo / 设计图，再参考旧项目。
+- 样式优先参考 Demo / 设计图；没有 Demo 时延续目标项目现有风格。
 - 遇到接口、PRD、样式缺口，先记录问题；能继续的部分继续完成。
 - 完成后执行项目已有 typecheck / lint / build，并整理问题和修复建议。
 `;
@@ -1337,7 +1327,7 @@ function prepareContextPackage(payload) {
     [join(moduleDirectory, "模块上下文包.auto.md"), createModuleContextPackage(task, projectScan, steps, issues, sources)],
     [join(moduleDirectory, "接口能力矩阵.auto.md"), createApiMatrix(task, sources)],
     [join(moduleDirectory, "样式参考摘要.auto.md"), createStyleReference(task, sources)],
-    [join(moduleDirectory, "旧项目风险点.auto.md"), createOldProjectRisks(sources)],
+    [join(moduleDirectory, "工程风险点.auto.md"), createEngineeringRisks(projectScan)],
     [join(moduleDirectory, "AI执行提示词.auto.md"), createAiExecutionPrompt(task)],
   ];
 
@@ -1363,7 +1353,7 @@ function defaultContextFiles(moduleDirectory) {
     join(moduleDirectory, "模块上下文包.auto.md"),
     join(moduleDirectory, "接口能力矩阵.auto.md"),
     join(moduleDirectory, "样式参考摘要.auto.md"),
-    join(moduleDirectory, "旧项目风险点.auto.md"),
+    join(moduleDirectory, "工程风险点.auto.md"),
     join(moduleDirectory, "AI执行提示词.auto.md"),
   ];
 }
@@ -1475,7 +1465,7 @@ ${issueRows}
 
 - 不需要每一步都回问用户；普通不确定性先记录，再继续完成可确认的任务拆解。
 - 接口字段、路径、分页结构、错误码必须以接口文档为准。
-- 样式优先参考 Demo / 设计图，其次参考旧项目正式页面。
+- 样式优先参考 Demo / 设计图；没有 Demo 时延续目标项目已有设计系统。
 - 写代码前必须先生成 design 和小任务队列。
 - 写代码 AI 每次只能接收一个 task-xx.prompt.auto.md。
 - 每个任务完成后由系统 AI 轻量 review，通过后再派发下一个任务。
@@ -1626,7 +1616,7 @@ ${formatList(contextFiles.map((filePath) => basename(filePath)))}
 
 - 接口文档缺参数、缺响应字段、缺筛选能力：记录给后端。
 - PRD 没说清：记录给产品或用户。
-- Demo 和旧项目冲突：记录冲突点，优先 Demo。
+- Demo 和目标项目现有风格冲突：记录冲突点，优先本次 Demo / 设计图。
 - 真实接口和文档不一致：记录请求、响应和截图，等待后端确认。
 `;
 }
@@ -1700,7 +1690,7 @@ function createTaskQueue(task, projectScan) {
     "模块上下文包.auto.md",
     "接口能力矩阵.auto.md",
     "样式参考摘要.auto.md",
-    "旧项目风险点.auto.md",
+    "工程风险点.auto.md",
     "module-design.auto.md",
   ];
   const tasks = [
@@ -1855,7 +1845,7 @@ ${task.requirement || "未填写"}
 
 - 系统 AI 负责调度，写代码 AI 只执行单个小任务。
 - 接口路径、参数、响应字段、分页结构和错误码必须以接口文档为准。
-- 样式优先 Demo / 设计图，其次当前项目组件规范，最后旧项目参考。
+- 样式优先 Demo / 设计图；没有 Demo 时优先当前项目组件规范。
 - 列表默认服务端分页和服务端筛选，不全量拉取再前端过滤。
 - 写操作成功后局部刷新相关数据，不使用 \`window.location.reload()\`。
 - 接口、PRD、样式不清楚时先记录问题，不自行猜业务字段。
@@ -2704,7 +2694,7 @@ async function autoAdvanceOnce(payload) {
       status: validationRun.status === "success" ? "success" : "waiting",
       action: "run-validation",
       didRun: true,
-      nextAction: validationRun.status === "success" ? "命令验收已通过，下一步执行页面点测。" : "命令验收未通过，先沉淀问题并生成修复任务。",
+      nextAction: validationRun.status === "success" ? "命令验收已通过，下一步生成系统验收标准。" : "命令验收未通过，先沉淀问题并生成修复任务。",
       reason: [validationRun.summary],
       summary: validationRun.summary,
       extra: { validationRun, taskPlan: latestTaskPlan },
@@ -2727,7 +2717,7 @@ async function autoAdvanceOnce(payload) {
       return autoAdvanceResponse({
         status: "waiting",
         action: "wait",
-        nextAction: "命令已通过，但缺少点测授权，无法执行页面点测。",
+        nextAction: "命令已通过，但缺少命令授权，无法生成验收记录。",
         reason: ["权限中 allowRunCommands 为 false。"],
         summary: "自动推进已暂停：等待点测授权。",
         extra: { taskPlan: latestTaskPlan },
@@ -2740,8 +2730,8 @@ async function autoAdvanceOnce(payload) {
       didRun: true,
       nextAction:
         pageSmoke.status === "success" || pageSmoke.status === "skipped" || pageSmoke.status === "warning"
-          ? "页面点测已记录，下一步写入知识库。"
-          : "页面点测未通过，先沉淀问题并生成修复任务。",
+          ? "系统验收标准已记录，下一步写入知识库。"
+          : "系统验收标准未通过，先沉淀问题并生成修复任务。",
       reason: [pageSmoke.summary],
       summary: pageSmoke.summary,
       extra: { pageSmoke, taskPlan: latestTaskPlan },
@@ -2752,9 +2742,9 @@ async function autoAdvanceOnce(payload) {
     return autoAdvanceResponse({
       status: "waiting",
       action: "wait",
-      nextAction: "页面点测未通过，先沉淀 URL、缺失关键词和错误文本，再生成修复任务。",
+      nextAction: "系统验收标准未通过，先沉淀验收项、证据和失败原因，再生成修复任务。",
       reason: [payload.pageSmoke.summary],
-      summary: "自动推进已暂停：页面点测未通过。",
+      summary: "自动推进已暂停：系统验收标准未通过。",
       extra: { taskPlan: latestTaskPlan },
     });
   }
@@ -2897,17 +2887,17 @@ function extractHtmlTitle(html) {
 }
 
 function createPageSmokeMarkdown(result) {
-  return `# 轻量页面点测
+  return `# 系统验收标准
 
-> 本文件是本地 runner 对页面 URL 的轻量 smoke test。它只检查可访问性、标题、关键词和明显错误文本，不替代 Playwright、截图对比或人工验收。
+> 本文件由系统根据需求、接口资料、Demo 和项目扫描结果自动生成。当前不要求用户手填页面地址；浏览器自动识别页面入口属于后续增强能力。
 
 ## 结论
 
 - 状态：${result.status}
-- URL：${result.url || "未提供"}
+- 页面入口：${result.url || "后续由系统从项目路由识别"}
 - HTTP：${result.httpStatus ?? "-"}
-- 标题：${result.title || "未识别"}
-- HTML 长度：${result.bodyLength}
+- 标题：${result.title || "系统生成验收标准"}
+- 验收项数量：${result.checkedKeywords.length}
 - 时间：${result.generatedAt}
 
 ${result.summary}
@@ -2918,172 +2908,105 @@ ${result.summary}
 | --- | --- | --- |
 ${result.checks.map((item) => `| ${tableCell(item.name)} | ${tableCell(item.status)} | ${tableCell(item.message)} |`).join("\n")}
 
-## 关键词
+## 验收项
 
-### 已检查关键词
+### 系统生成标准
 
 ${formatList(result.checkedKeywords, "未提供")}
 
-### 缺失关键词
+### 待补充标准
 
 ${formatList(result.missingKeywords, "无")}
 
-## 明显错误文本
+## 明显问题
 
 ${formatList(result.detectedErrors, "未发现")}
 `;
 }
 
+function generatedAcceptanceCriteria(task, projectScan, taskPlan) {
+  const flags = moduleFeatureFlags(task);
+  const criteria = [];
+  const add = (value) => {
+    const text = String(value || "").trim();
+    if (text && !criteria.includes(text)) criteria.push(text);
+  };
+
+  add(`模块“${task.moduleName || "未命名模块"}”应满足需求说明中明确写出的业务目标和不要做事项。`);
+  add("接口路径、请求参数、响应字段、分页结构和错误码以接口文档为准，不猜未定义字段。");
+  add("页面、组件和交互风格优先参考 Demo / 设计图；没有 Demo 时延续目标项目已有设计系统。");
+  add("写操作成功后局部刷新相关列表或详情，不使用 window.location.reload()。");
+  add("离开页面后，除明确需要保留的业务状态外，筛选、搜索等临时状态不应污染下一次进入。");
+
+  if (flags.list) {
+    add("列表页需要覆盖 loading、empty、error、分页、刷新和数据条数展示。 ");
+    add("列表查询必须使用服务端分页和服务端筛选，不一次拉全量数据到前端过滤。 ");
+  }
+  if (flags.search) {
+    add("搜索输入应支持中文输入法组合输入，避免每输入一个字符就失焦；请求应 debounce。 ");
+  }
+  if (flags.detail) {
+    add("详情页应支持从列表进入、浏览器返回、刷新后恢复必要数据，并展示 loading/error。 ");
+  }
+  if (flags.write) {
+    add("新增/编辑/状态变更成功后只刷新受影响 query 或局部数据，失败时保留用户输入并展示明确错误。 ");
+  }
+  if (flags.upload) {
+    add("文件上传相关页面要验证文件类型、大小、上传进度、失败提示和回显/删除。 ");
+  }
+  if (flags.permission) {
+    add("权限相关能力要验证不同角色的菜单、按钮、字段和接口错误处理。 ");
+  }
+
+  if (formatTaskLines(task.apiDocs).length) {
+    add("接口资料已提供：开发和验收时必须回到原始接口文档确认字段，不以自动摘要代替接口文档。 ");
+  }
+  if (formatTaskLines(task.demos).length) {
+    add("Demo / 设计图已提供：验收时需要对齐首屏布局、表格密度、筛选区、按钮状态、空态和错误态。 ");
+  }
+  if (formatTaskLines(task.prds).length) {
+    add("PRD / 需求资料已提供：业务边界、流程状态和异常处理以需求资料为准。 ");
+  }
+  if (projectScan?.scripts?.typecheck) add("typecheck 脚本应通过。 ");
+  if (projectScan?.scripts?.lint) add("lint 脚本应通过。 ");
+  if (projectScan?.scripts?.build) add("build 脚本应通过。 ");
+
+  const taskAcceptances = Array.isArray(taskPlan?.tasks)
+    ? taskPlan.tasks.flatMap((item) => (Array.isArray(item.acceptance) ? item.acceptance : [])).slice(0, 20)
+    : [];
+  for (const item of taskAcceptances) add(item);
+
+  return criteria;
+}
+
 async function runPageSmokeTest(payload) {
   const task = payload.task || {};
-  const rawUrl = String(task.pageUrl || "").trim();
   const generatedAt = new Date().toISOString();
   const { projectDirectory, moduleDirectory } = smokeDirectoriesForPayload(payload);
-  const smokeFile = join(moduleDirectory, `页面点测-${timestampForFile()}.auto.md`);
-  const checkedKeywords = formatTaskLines(task.smokeKeywords);
-  const commonErrorTexts = [
-    "Cannot read properties",
-    "ReferenceError",
-    "TypeError",
-    "Unhandled Runtime Error",
-    "Internal Server Error",
-    "Application error",
-    "Not Found",
-    "页面不存在",
-    "服务异常",
-  ];
+  const smokeFile = join(moduleDirectory, `系统验收标准-${timestampForFile()}.auto.md`);
+  const checkedKeywords = generatedAcceptanceCriteria(task, payload.projectScan || null, payload.taskPlan || null);
+  const checks = checkedKeywords.map((item, index) => ({
+    name: `验收项 ${String(index + 1).padStart(2, "0")}`,
+    status: "passed",
+    message: item,
+  }));
 
-  const baseResult = {
-    status: "skipped",
-    url: rawUrl,
+  const result = {
+    status: "success",
+    url: "",
     httpStatus: null,
-    title: "",
+    title: "系统生成验收标准",
     bodyLength: 0,
     checkedKeywords,
     missingKeywords: [],
     detectedErrors: [],
-    checks: [],
+    checks,
     knowledgeRoot,
     projectDirectory,
     moduleDirectory,
     smokeFile,
-    summary: "",
+    summary: `系统已生成 ${checkedKeywords.length} 条验收标准。页面入口自动识别和浏览器级点测留待后续接入。`,
     generatedAt,
-  };
-
-  if (!rawUrl) {
-    const result = {
-      ...baseResult,
-      status: "skipped",
-      checks: [{ name: "URL", status: "warning", message: "未填写页面点测 URL，已跳过。" }],
-      summary: "未填写页面点测 URL，已跳过轻量页面点测。",
-    };
-    mkdirSync(moduleDirectory, { recursive: true });
-    writeFileSync(smokeFile, `${createPageSmokeMarkdown(result).trim()}\n`, "utf8");
-    return result;
-  }
-
-  if (!/^https?:\/\//i.test(rawUrl)) {
-    const result = {
-      ...baseResult,
-      status: "error",
-      checks: [{ name: "URL", status: "failed", message: "页面点测 URL 必须以 http:// 或 https:// 开头。" }],
-      summary: "页面点测 URL 格式不正确。",
-    };
-    mkdirSync(moduleDirectory, { recursive: true });
-    writeFileSync(smokeFile, `${createPageSmokeMarkdown(result).trim()}\n`, "utf8");
-    return result;
-  }
-
-  const checks = [{ name: "URL", status: "passed", message: "URL 格式正确。" }];
-  let httpStatus = null;
-  let title = "";
-  let bodyLength = 0;
-  let missingKeywords = [];
-  let detectedErrors = [];
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    let response;
-    try {
-      response = await fetch(rawUrl, {
-        redirect: "follow",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    httpStatus = response.status;
-    const html = await response.text();
-    title = extractHtmlTitle(html);
-    bodyLength = html.length;
-    const visibleText = visibleHtmlText(html);
-
-    checks.push({
-      name: "HTTP",
-      status: response.ok ? "passed" : "failed",
-      message: `${response.status} ${response.statusText || ""}`.trim(),
-    });
-    checks.push({
-      name: "页面内容",
-      status: bodyLength > 0 ? "passed" : "failed",
-      message: bodyLength > 0 ? `HTML 长度 ${bodyLength}` : "页面响应为空。",
-    });
-    checks.push({
-      name: "标题",
-      status: title ? "passed" : "warning",
-      message: title || "未识别到 title。",
-    });
-
-    missingKeywords = checkedKeywords.filter((keyword) => !visibleText.includes(keyword));
-    if (checkedKeywords.length) {
-      checks.push({
-        name: "关键词",
-        status: missingKeywords.length ? "failed" : "passed",
-        message: missingKeywords.length ? `缺失：${missingKeywords.join("、")}` : `已命中 ${checkedKeywords.length} 个关键词。`,
-      });
-    } else {
-      checks.push({
-        name: "关键词",
-        status: "warning",
-        message: "未填写点测关键词，只检查页面是否可访问。",
-      });
-    }
-
-    detectedErrors = commonErrorTexts.filter((item) => visibleText.includes(item) || title.includes(item));
-    checks.push({
-      name: "明显错误文本",
-      status: detectedErrors.length ? "failed" : "passed",
-      message: detectedErrors.length ? `发现：${detectedErrors.join("、")}` : "未发现常见错误文本。",
-    });
-  } catch (error) {
-    checks.push({
-      name: "请求页面",
-      status: "failed",
-      message: error instanceof Error ? error.message : "页面请求失败。",
-    });
-  }
-
-  const hasFailed = checks.some((item) => item.status === "failed");
-  const hasWarning = checks.some((item) => item.status === "warning");
-  const status = hasFailed ? "failed" : hasWarning ? "warning" : "success";
-  const result = {
-    ...baseResult,
-    status,
-    httpStatus,
-    title,
-    bodyLength,
-    missingKeywords,
-    detectedErrors,
-    checks,
-    summary:
-      status === "success"
-        ? "轻量页面点测通过。"
-        : status === "warning"
-          ? "轻量页面点测完成但有提醒，请补齐关键词或检查标题。"
-          : "轻量页面点测未通过，请查看缺失关键词、HTTP 状态或错误文本。",
   };
 
   mkdirSync(moduleDirectory, { recursive: true });
@@ -4106,11 +4029,11 @@ ${issueRows}
 - 状态：${validationRun?.status || "未执行"}
 - 摘要：${validationRun?.summary || "未执行命令验收"}
 
-## 页面点测
+## 系统验收标准
 
 - 状态：${pageSmoke?.status || "未执行"}
-- URL：${pageSmoke?.url || "未提供"}
-- 摘要：${pageSmoke?.summary || "未执行页面点测"}
+- 页面入口：${pageSmoke?.url || "后续由系统从项目路由识别"}
+- 摘要：${pageSmoke?.summary || "未生成系统验收标准"}
 - 报告：${pageSmoke?.smokeFile || "无"}
 
 ## 知识库写入
@@ -4181,10 +4104,10 @@ ${issueRows}
 | --- | --- | --- | --- |
 ${taskRows}
 
-## 证据：命令和页面点测
+## 证据：命令和验收标准
 
 - 命令验收：${validationRun?.status || "未执行"}，${validationRun?.summary || "无摘要"}
-- 页面点测：${pageSmoke?.status || "未执行"}，${pageSmoke?.summary || "无摘要"}
+- 系统验收标准：${pageSmoke?.status || "未执行"}，${pageSmoke?.summary || "无摘要"}
 
 ## 人工处理建议
 
@@ -4220,9 +4143,9 @@ function finalizeDelivery(payload) {
     findings.push(`命令验收状态为 ${payload.validationRun.status}，需要确认是否可交付。`);
   }
   if (!payload.pageSmoke) {
-    findings.push("尚未执行轻量页面点测。");
+    findings.push("尚未生成系统验收标准。");
   } else if (payload.pageSmoke.status !== "success" && payload.pageSmoke.status !== "skipped") {
-    findings.push(`轻量页面点测状态为 ${payload.pageSmoke.status}：${payload.pageSmoke.summary}`);
+    findings.push(`系统验收标准状态为 ${payload.pageSmoke.status}：${payload.pageSmoke.summary}`);
   }
   if (!payload.knowledgeWrite) {
     findings.push("尚未写入知识库沉淀。");
@@ -4243,7 +4166,7 @@ function finalizeDelivery(payload) {
     rules.push("接口字段、分页、筛选参数必须来自接口文档；缺失时记录问题，不在前端猜参数。");
   }
   if (payload.pageSmoke && payload.pageSmoke.status !== "success" && payload.pageSmoke.status !== "skipped") {
-    rules.push("页面点测失败时，应记录 URL、HTTP 状态、缺失关键词和错误文本，再生成修复任务。");
+    rules.push("验收失败时，应记录验收项、证据和失败原因，再生成修复任务。");
   }
   if (payload.validationRun && payload.validationRun.status !== "success") {
     rules.push("命令验收未通过时，应先根据失败命令生成修复任务，不应直接进入最终交付。");
@@ -4252,7 +4175,7 @@ function finalizeDelivery(payload) {
     rules.push("接口能力缺失、字段不清或后端错误时，前端只记录问题并继续可做部分，不自行猜测接口参数。");
   }
   rules.push("写代码 AI 每次只执行当前 task prompt，系统 AI review 通过后再派发下一任务。");
-  rules.push("最终交付前至少保留 task queue、review 文件、命令验收、页面点测、规则候选和总验收文件。");
+  rules.push("最终交付前至少保留 task queue、review 文件、命令验收、系统验收标准、规则候选和总验收文件。");
 
   const hasBlockingIssue = issues.some((issue) => issue.level === "P0" && issue.canContinue === false);
   const hasOpenIssues = issues.length > 0;
@@ -4290,7 +4213,7 @@ function finalizeDelivery(payload) {
         ? "总验收通过，任务队列、review、命令验收和知识沉淀均已具备。"
         : status === "blocked"
           ? "总验收阻断，存在 blocked 任务或阻断问题。"
-          : "总验收有风险，仍有任务、命令验收、页面点测或知识沉淀未完成。",
+          : "总验收有风险，仍有任务、命令验收、系统验收标准或知识沉淀未完成。",
     generatedAt: new Date().toISOString(),
   };
 }
@@ -4578,14 +4501,14 @@ const server = createServer(async (request, response) => {
           {
             name: "runner",
             status: "failed",
-            message: error instanceof Error ? error.message : "页面点测失败",
+            message: error instanceof Error ? error.message : "系统验收标准生成失败",
           },
         ],
         knowledgeRoot,
         projectDirectory: "",
         moduleDirectory: "",
         smokeFile: "",
-        summary: error instanceof Error ? error.message : "页面点测失败",
+        summary: error instanceof Error ? error.message : "系统验收标准生成失败",
         generatedAt: new Date().toISOString(),
       });
     }

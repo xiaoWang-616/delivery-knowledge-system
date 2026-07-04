@@ -70,10 +70,6 @@ ${list(task.apiDocs)}
 
 ${list(task.demos)}
 
-### 旧项目参考
-
-${list(task.oldProjects)}
-
 ### PRD / 需求资料
 
 ${list(task.prds)}
@@ -122,9 +118,6 @@ ${lines(task.apiDocs).join("\n") || "未提供"}
 
 Demo / 设计图：
 ${lines(task.demos).join("\n") || "未提供"}
-
-旧项目参考：
-${lines(task.oldProjects).join("\n") || "未提供"}
 
 PRD：
 ${lines(task.prds).join("\n") || "未提供"}
